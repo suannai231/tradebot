@@ -1,139 +1,339 @@
-# Trade Bot Project
+# Trading Bot System
 
 ## Overview
 
-This repository contains the scaffold of a US–equities trading bot written in **Python**.  The design follows an event-driven, micro-services architecture with three main services:
+A comprehensive **event-driven trading bot system** for US equities built with Python, featuring real-time data processing, technical analysis, and automated trading capabilities. The system follows a microservices architecture with full OHLCV data support and persistent storage.
 
-1. **market_data** – streams real-time prices into a message bus.
-2. **strategy** – subscribes to prices, runs technical-analysis rules, and emits trading signals.
-3. **execution** – routes orders to a brokerage adapter (placeholder for Fidelity for now).
+## 🏗️ Architecture
 
-A lightweight Redis Streams instance acts as the internal message bus.  A Postgres/TimescaleDB container is planned for historical tick storage but is not included in the first commit.
+The system consists of 7 microservices communicating via Redis Streams:
 
 ```
-┌─────────────┐   price.ticks   ┌────────────┐   orders.new   ┌──────────────┐
-│ market_data │ ─────────────▶ │  strategy  │ ─────────────▶ │  execution   │
-└─────────────┘                └────────────┘                └──────────────┘
+┌─────────────────┐  price.ticks   ┌─────────────┐  orders.new   ┌──────────────┐
+│   Market Data   │ ──────────────▶│  Strategy   │ ─────────────▶│  Execution   │
+│   Services      │                │   Engine    │               │   Service    │
+└─────────────────┘                └─────────────┘               └──────────────┘
+         │                                                               │
+         ▼                                                               ▼
+┌─────────────────┐                ┌─────────────┐               ┌──────────────┐
+│  Storage        │                │ TimescaleDB │               │ Trade Logs   │
+│  Service        │ ──────────────▶│ Database    │◀──────────────│ & Analytics  │
+└─────────────────┘                └─────────────┘               └──────────────┘
+                                           │
+                                           ▼
+                                   ┌─────────────┐
+                                   │ REST API    │
+                                   │ Service     │
+                                   └─────────────┘
 ```
 
-## Quick start (development)
+## 🚀 Quick Start
 
-1. **Install Python 3.10+**
-2. Clone the repo and create a virtual environment:
+### Prerequisites
+- Docker & Docker Compose
+- Python 3.11+ (for development)
 
+### 1. Clone and Setup
 ```bash
+git clone <repository-url>
+cd Trade
+cp env.example .env  # Edit with your API keys
+```
+
+### 2. Start All Services
+```bash
+# Start entire system with Docker Compose
+docker-compose up -d
+
+# Check service status
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+```
+
+### 3. Access the System
+- **API Documentation**: http://localhost:8000/docs
+- **Historical Data**: http://localhost:8000/history/AAPL
+- **Symbols Overview**: http://localhost:8000/symbols
+- **OHLCV Analytics**: http://localhost:8000/ohlcv/AAPL
+
+## 📊 Services Overview
+
+| Service | Purpose | Port | Status |
+|---------|---------|------|--------|
+| **market_data** | Mock data generation with realistic OHLCV | - | ✅ Active |
+| **alpaca_service** | Live data from Alpaca WebSocket | - | ⚠️ Requires API keys |
+| **polygon_service** | Live data from Polygon.io | - | ⚠️ Requires API keys |
+| **strategy** | Moving average crossover signals | - | ✅ Active |
+| **execution** | Trade execution (placeholder) | - | ✅ Active |
+| **storage** | TimescaleDB data persistence | - | ✅ Active |
+| **api** | REST API for historical data | 8000 | ✅ Active |
+| **redis** | Message bus | 6379 | ✅ Active |
+| **timescaledb** | Time-series database | 5432 | ✅ Active |
+
+## 📁 Project Structure
+
+```
+Trade/
+├── tradebot/                    # Main Python package
+│   ├── common/                  # Shared components
+│   │   ├── models.py           # Data models (PriceTick, Signal)
+│   │   └── bus.py              # Redis message bus
+│   ├── market_data/            # Data ingestion services
+│   │   ├── service.py          # Mock data generator
+│   │   ├── alpaca_service.py   # Live Alpaca WebSocket
+│   │   └── polygon_service.py  # Live Polygon.io WebSocket
+│   ├── strategy/               # Trading logic
+│   │   └── service.py          # Moving average strategy
+│   ├── execution/              # Trade execution
+│   │   └── service.py          # Order management (placeholder)
+│   ├── storage/                # Data persistence
+│   │   └── timeseries_service.py # TimescaleDB storage
+│   ├── api/                    # REST API
+│   │   └── history_service.py  # FastAPI endpoints
+│   └── backfill/               # Historical data
+│       └── alpaca_historical.py # Alpaca data backfill
+├── docker-compose.yml          # Service orchestration
+├── Dockerfile                  # Container definition
+├── requirements.txt            # Python dependencies
+├── .env                        # Environment variables
+└── README.md                   # This file
+```
+
+## 🔧 Configuration
+
+### Environment Variables (.env)
+```bash
+# Database connection
+DATABASE_URL=postgresql://postgres:password@localhost:5432/tradebot
+
+# Redis connection  
+REDIS_URL=redis://localhost:6379
+
+# Trading symbols (comma-separated)
+SYMBOLS=AAPL,MSFT,AMZN,GOOG,TSLA
+
+# Alpaca API credentials
+ALPACA_KEY=your_alpaca_key_here
+ALPACA_SECRET=your_alpaca_secret_here
+
+# Polygon API key (optional)
+POLYGON_API_KEY=your_polygon_key_here
+```
+
+## 📈 Data Features
+
+### OHLCV Data Support
+Full market data including:
+- **Open, High, Low, Close** prices
+- **Volume** and **Trade Count**
+- **VWAP** (Volume Weighted Average Price)
+- **Real-time timestamps**
+
+### Data Sources
+1. **Mock Data**: Realistic price simulation (~$220 AAPL, ~$430 MSFT)
+2. **Alpaca**: Live WebSocket feed (free tier with paper trading)
+3. **Polygon.io**: Professional market data (requires subscription)
+
+### Storage
+- **TimescaleDB**: Optimized time-series database
+- **Hypertables**: Automatic partitioning and compression
+- **Indexes**: Optimized for symbol and time-based queries
+- **Persistent**: Data survives container restarts
+
+## 🔌 API Endpoints
+
+### Historical Data
+```bash
+# Get recent OHLCV data
+GET /history/{symbol}?start=2024-01-01&end=2024-12-31&limit=1000
+
+# Example response
+{
+  "symbol": "AAPL",
+  "price": 220.50,
+  "timestamp": "2024-06-21T10:30:00Z",
+  "open": 220.10,
+  "high": 221.00,
+  "low": 219.80,
+  "close": 220.50,
+  "volume": 1500000,
+  "trade_count": 12500,
+  "vwap": 220.35
+}
+```
+
+### Analytics
+```bash
+# Symbol overview
+GET /symbols
+
+# OHLCV statistics
+GET /ohlcv/{symbol}
+
+# Price statistics
+GET /stats/{symbol}
+```
+
+## 🤖 Trading Strategy
+
+### Current Implementation
+- **Moving Average Crossover**: 5-tick vs 20-tick simple moving average
+- **Signal Generation**: BUY when short MA > long MA, SELL when opposite
+- **Confidence Scoring**: Based on difference between moving averages
+
+### Example Signals
+```json
+{
+  "symbol": "AAPL",
+  "side": "BUY",
+  "confidence": 0.068,
+  "timestamp": "2024-06-21T10:30:00Z"
+}
+```
+
+## 📊 Historical Data
+
+### Backfill from Alpaca
+```bash
+# Download 90 days of historical data
+python -m tradebot.backfill.alpaca_historical
+
+# Or with Docker
+docker-compose run --rm market_data python -m tradebot.backfill.alpaca_historical
+```
+
+### Data Coverage
+- **90 days** of daily OHLCV bars
+- **Free tier compatible** (uses IEX feed)
+- **Automatic retry** logic for API failures
+- **Batch processing** with rate limiting
+
+## 🔄 Development Workflow
+
+### Local Development
+```bash
+# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-3. **Run Redis**
-   The easiest way is Docker:
-
-```bash
-docker run -p 6379:6379 --name redis -d redis:7-alpine
-```
-
-4. **Start services in separate terminals:**
-
-```bash
+# Run individual services
 python -m tradebot.market_data.service
 python -m tradebot.strategy.service
 python -m tradebot.execution.service
 ```
 
-Each service logs to the console.  Market-data is mocked with random prices until you wire up a real data provider (Polygon, IEX Cloud, etc.).
+### VS Code Debugging
+Pre-configured launch configurations available in `.vscode/launch.json`:
+- Individual service debugging
+- Compound debugging (multiple services)
+- Environment variable support
 
-## Project layout
-
-```
-tradebot/             # Python package with all services
-    common/           # Shared helpers (message bus, models, utils)
-    market_data/      # Ingestion service
-    strategy/         # Strategy / TA logic
-    execution/        # Order manager / broker adapter
-requirements.txt      # Python dependencies
-README.md             # This file
-```
-
-## Next steps
-
-* Swap the mock data source with a real WebSocket client.
-* Persist ticks to TimescaleDB.
-* Implement technical indicators with TA-Lib or pandas-ta.
-* Fill out the Fidelity (or alternate broker) adapter in execution service.
-* Add Docker Compose & Kubernetes manifests for full orchestration.
-
-Happy hacking! 
-
-### Live market data via Polygon.io
-
-If you have a Polygon.io API key you can stream real trades:
-
+### Service Management
 ```bash
-export POLYGON_API_KEY=your_key_here
-export SYMBOLS=AAPL,MSFT,TSLA   # optional symbol filter
-python -m tradebot.market_data.polygon_service
+# Start specific services
+docker-compose up -d redis timescaledb api
+
+# Scale services
+docker-compose up -d --scale market_data=2
+
+# View service logs
+docker-compose logs -f strategy execution
+
+# Restart services
+docker-compose restart market_data
+
+# Stop all services
+docker-compose down
 ```
 
-The rest of the stack consumes the same `price.ticks` stream, so no changes
-are needed to the strategy or execution services. 
+## 🧪 Testing
 
-### Live market data via Alpaca (free)
-
-1. Sign up for a free *Paper Trading* account at https://alpaca.markets
-2. In the dashboard → *API Keys* → *Generate New Key*.
-3. Export the credentials and run the service:
-
+### Service Health Checks
 ```bash
-export ALPACA_KEY=AK6N...      # key ID
-export ALPACA_SECRET=3bWq7...  # secret key
-export SYMBOLS=AAPL,MSFT,TSLA  # optional symbol list
-python -m tradebot.market_data.alpaca_service
+# Test Redis
+docker exec trade-redis-1 redis-cli ping
+
+# Test TimescaleDB
+docker exec trade-timescaledb-1 pg_isready -U postgres
+
+# Test API
+curl http://localhost:8000/
+
+# Check data flow
+curl http://localhost:8000/symbols
 ```
 
-This streams full-SIP trades in real time at no cost. 
-
-## Environment variables
-
-Create a `.env` file (copy `env.example`) and fill in credentials.  All
-services load it automatically via `python-dotenv`. 
-
-## Historical Data Storage
-
-The system now includes full historical data capabilities:
-
-### TimescaleDB Storage
-All price ticks are automatically stored in a TimescaleDB (PostgreSQL) database:
-
+### Data Verification
 ```bash
-# Start with Docker Compose (includes TimescaleDB)
-docker compose up
+# Check stored data count
+docker exec trade-timescaledb-1 psql -U postgres -d tradebot -c "SELECT COUNT(*) FROM price_ticks;"
 
-# Or run storage service manually
-python -m tradebot.storage.timeseries_service
+# View recent data
+curl "http://localhost:8000/history/AAPL?limit=5" | python -m json.tool
 ```
 
-### Historical Data API
-Query historical data via REST API at http://localhost:8000:
+## 🚀 Deployment
 
+### Production Considerations
+1. **Environment Variables**: Use secure secret management
+2. **Database**: Configure persistent volumes and backups
+3. **Monitoring**: Add health checks and alerting
+4. **Scaling**: Use Docker Swarm or Kubernetes
+5. **Security**: Configure firewalls and access controls
+
+### Docker Compose Production
 ```bash
-# Get recent ticks for AAPL
-curl "http://localhost:8000/history/AAPL?limit=100"
+# Production deployment
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
-# Get price statistics
-curl "http://localhost:8000/stats/AAPL"
-
-# List all available symbols
-curl "http://localhost:8000/symbols"
+# With resource limits and restart policies
+docker-compose up -d --scale strategy=2 --scale execution=2
 ```
 
-### Backfill Historical Data
-Download months of historical bars from Alpaca:
+## 🔮 Future Enhancements
 
-```bash
-python -m tradebot.backfill.alpaca_historical
-```
+### Immediate Next Steps
+- [ ] **Fidelity Integration**: Replace execution placeholder with real broker API
+- [ ] **Advanced Strategies**: RSI, MACD, Bollinger Bands
+- [ ] **Risk Management**: Position sizing, stop-loss, portfolio limits
+- [ ] **More Symbols**: Expand from 5 to 100+ stocks
 
-This fetches 90 days of daily bars + 7 days of hourly bars for all symbols. 
+### Advanced Features
+- [ ] **Machine Learning**: Price prediction models
+- [ ] **Options Trading**: Derivatives support
+- [ ] **Crypto Support**: Bitcoin and altcoin trading
+- [ ] **Web Dashboard**: Real-time monitoring UI
+- [ ] **Backtesting**: Historical strategy validation
+- [ ] **Paper Trading**: Risk-free strategy testing
+
+## 📚 Technology Stack
+
+- **Python 3.11+**: Core application language
+- **Redis Streams**: Event-driven messaging
+- **TimescaleDB**: Time-series database (PostgreSQL extension)
+- **FastAPI**: Modern REST API framework
+- **Docker Compose**: Service orchestration
+- **Pydantic**: Data validation and serialization
+- **asyncio**: Asynchronous programming
+- **WebSockets**: Real-time market data
+- **VS Code**: Development environment with debugging
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make changes and test thoroughly
+4. Submit a pull request with detailed description
+
+## 📄 License
+
+This project is for educational and research purposes. Please ensure compliance with your broker's API terms and applicable financial regulations.
+
+---
+
+**Happy Trading! 🚀📈** 

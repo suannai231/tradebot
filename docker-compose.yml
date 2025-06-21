@@ -35,6 +35,16 @@ services:
     depends_on:
       - redis
 
+  polygon_service:
+    build: .
+    command: python -m tradebot.market_data.polygon_service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+      - POLYGON_API_KEY=${POLYGON_API_KEY}
+    depends_on:
+      - redis
+
   strategy:
     build: .
     command: python -m tradebot.strategy.service
