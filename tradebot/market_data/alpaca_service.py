@@ -18,8 +18,16 @@ load_dotenv()
 
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
-if not (ALPACA_KEY and ALPACA_SECRET):
-    raise RuntimeError("Set ALPACA_KEY and ALPACA_SECRET environment variables")
+
+def check_credentials():
+    """Check if Alpaca credentials are available."""
+    if not (ALPACA_KEY and ALPACA_SECRET):
+        logger.error("ALPACA_KEY and ALPACA_SECRET environment variables are required")
+        logger.info("Please set your Alpaca credentials in .env file:")
+        logger.info("ALPACA_KEY=your_alpaca_key_here")
+        logger.info("ALPACA_SECRET=your_alpaca_secret_here")
+        return False
+    return True
 
 SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
 
@@ -81,6 +89,10 @@ async def alpaca_stream(bus: MessageBus):
 
 
 async def main():
+    if not check_credentials():
+        logger.error("Cannot start Alpaca service without credentials")
+        return
+    
     bus = MessageBus()
     await bus.connect()
 

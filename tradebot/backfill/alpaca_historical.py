@@ -36,12 +36,26 @@ async def fetch_historical_bars(session: aiohttp.ClientSession, symbol: str, sta
         "timeframe": timeframe,
         "limit": 10000,
         "adjustment": "raw",
-        "feed": "sip"
+        "feed": "iex"  # Use IEX feed for free tier
     }
     
     async with session.get(url, headers=headers, params=params) as response:
         if response.status != 200:
-            logger.error("Failed to fetch %s: %s %s", symbol, response.status, await response.text())
+            error_text = await response.text()
+            logger.error("Failed to fetch %s: %s %s", symbol, response.status, error_text)
+            
+            # If IEX fails, try without feed parameter (will use default)
+            if response.status == 403 and "feed" in str(error_text):
+                logger.info("Retrying %s without feed parameter", symbol)
+                params.pop("feed", None)
+                async with session.get(url, headers=headers, params=params) as retry_response:
+                    if retry_response.status != 200:
+                        logger.error("Retry failed for %s: %s %s", symbol, retry_response.status, await retry_response.text())
+                        return []
+                    data = await retry_response.json()
+                    bars = data.get("bars", [])
+                    logger.info("Fetched %d bars for %s (retry)", len(bars), symbol)
+                    return bars
             return []
         
         data = await response.json()
@@ -51,60 +65,65 @@ async def fetch_historical_bars(session: aiohttp.ClientSession, symbol: str, sta
 
 
 async def store_bars(pool: asyncpg.Pool, symbol: str, bars: List[dict]):
-    """Store historical bars as price ticks."""
+    """Store historical bars as price ticks with full OHLCV data."""
     if not bars:
         return
     
-    # Convert bars to ticks (using close price)
+    # Convert bars to ticks with full OHLCV data
     ticks = []
     for bar in bars:
         timestamp = datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
-        # Create a tick from the bar's close price
+        # Create a tick with full bar data
         tick = PriceTick(
             symbol=symbol,
-            price=bar["c"],  # close price
-            timestamp=timestamp
+            price=bar["c"],  # close price (for backward compatibility)
+            timestamp=timestamp,
+            open=bar.get("o"),
+            high=bar.get("h"), 
+            low=bar.get("l"),
+            close=bar.get("c"),
+            volume=bar.get("v"),
+            trade_count=bar.get("n"),
+            vwap=bar.get("vw")
         )
         ticks.append(tick)
     
-    # Batch insert
+    # Batch insert with all OHLCV fields
     async with pool.acquire() as conn:
         await conn.executemany(
-            "INSERT INTO price_ticks (symbol, price, timestamp) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            [(tick.symbol, tick.price, tick.timestamp) for tick in ticks]
+            """INSERT INTO price_ticks (symbol, price, timestamp, open_price, high_price, low_price, close_price, volume, trade_count, vwap) 
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING""",
+            [(tick.symbol, tick.price, tick.timestamp, tick.open, tick.high, tick.low, tick.close, tick.volume, tick.trade_count, tick.vwap) for tick in ticks]
         )
     
-    logger.info("Stored %d ticks for %s", len(ticks), symbol)
+    logger.info("Stored %d OHLCV bars for %s", len(ticks), symbol)
 
 
 async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbol: str, days_back: int = 30):
     """Backfill historical data for one symbol."""
-    end_date = datetime.now(timezone.utc)
+    # For free tier, try older data (15+ days old) which is usually available
+    end_date = datetime.now(timezone.utc) - timedelta(days=15)  # End 15 days ago
     start_date = end_date - timedelta(days=days_back)
     
     start_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_str = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     
-    logger.info("Backfilling %s from %s to %s", symbol, start_str, end_str)
+    logger.info("Backfilling %s from %s to %s (using older data for free tier)", symbol, start_str, end_str)
     
     # Fetch daily bars
     bars = await fetch_historical_bars(session, symbol, start_str, end_str, "1Day")
     await store_bars(pool, symbol, bars)
     
-    # Fetch hourly bars for recent data
-    recent_start = end_date - timedelta(days=7)
-    recent_start_str = recent_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    logger.info("Fetching hourly data for %s", symbol)
-    hourly_bars = await fetch_historical_bars(session, symbol, recent_start_str, end_str, "1Hour")
-    await store_bars(pool, symbol, hourly_bars)
+    # Skip hourly data for free tier to avoid rate limits
+    logger.info("Skipping hourly data for %s (free tier limitation)", symbol)
 
 
 async def init_database(pool: asyncpg.Pool):
-    """Ensure database schema exists."""
+    """Ensure database schema exists with full OHLCV support."""
     async with pool.acquire() as conn:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
         
+        # Check if we need to add new columns to existing table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS price_ticks (
                 symbol TEXT NOT NULL,
@@ -113,6 +132,18 @@ async def init_database(pool: asyncpg.Pool):
                 volume INTEGER DEFAULT 0,
                 UNIQUE(symbol, timestamp)
             );
+        """)
+        
+        # Add new OHLCV columns if they don't exist
+        await conn.execute("""
+            DO $$ BEGIN
+                ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS open_price DECIMAL(10,4);
+                ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS high_price DECIMAL(10,4);
+                ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS low_price DECIMAL(10,4);
+                ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS close_price DECIMAL(10,4);
+                ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS trade_count INTEGER;
+                ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS vwap DECIMAL(10,4);
+            END $$;
         """)
         
         try:
@@ -125,6 +156,11 @@ async def init_database(pool: asyncpg.Pool):
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_price_ticks_symbol_time 
             ON price_ticks (symbol, timestamp DESC);
+        """)
+        
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_price_ticks_symbol_volume 
+            ON price_ticks (symbol, volume DESC) WHERE volume IS NOT NULL;
         """)
 
 

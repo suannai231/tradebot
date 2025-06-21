@@ -5,8 +5,16 @@ from pydantic import BaseModel, Field
 
 class PriceTick(BaseModel):
     symbol: str = Field(..., description="Ticker symbol e.g. AAPL")
-    price: float = Field(..., description="Last traded price")
+    price: float = Field(..., description="Last traded price or close price")
     timestamp: datetime = Field(..., description="Exchange timestamp in UTC")
+    # Optional OHLCV fields for bar data
+    open: float | None = Field(None, description="Opening price")
+    high: float | None = Field(None, description="High price")
+    low: float | None = Field(None, description="Low price")
+    close: float | None = Field(None, description="Close price") 
+    volume: int | None = Field(None, description="Volume traded")
+    trade_count: int | None = Field(None, description="Number of trades")
+    vwap: float | None = Field(None, description="Volume weighted average price")
 
 
 class Side(str, Enum):
