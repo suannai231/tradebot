@@ -103,6 +103,47 @@ Trade/
 
 ## 🔧 Configuration
 
+### Quick Start Configurations
+
+Use the management script to create sample configurations:
+
+```bash
+python manage_symbols.py samples
+```
+
+This creates several `.env` files for different use cases:
+- `.env.popular` - Popular large-cap stocks (~100 symbols)
+- `.env.all_stocks` - All tradeable US stocks (~1000+ symbols)  
+- `.env.large_cap` - Large-cap stocks only (~50 symbols)
+- `.env.testing` - Minimal setup for testing (~3 symbols)
+
+Copy your preferred configuration:
+```bash
+cp .env.popular .env
+# Or manually copy env.example and customize
+```
+
+### Symbol Configuration Options
+
+The system now supports **all US stocks** with multiple modes:
+
+```bash
+# Symbol mode options
+SYMBOL_MODE=popular     # Popular large-cap stocks (~100)
+SYMBOL_MODE=all         # All tradeable US stocks (1000+)
+SYMBOL_MODE=large       # Large-cap stocks (~50)
+SYMBOL_MODE=mid         # Mid-cap stocks (~50)  
+SYMBOL_MODE=small       # Small-cap stocks (~100)
+SYMBOL_MODE=custom      # Use custom SYMBOLS list
+
+# Custom symbols (used when SYMBOL_MODE=custom)
+SYMBOLS=AAPL,MSFT,AMZN,GOOG,TSLA
+
+# Limits to prevent system overload
+MAX_SYMBOLS=500                    # Total symbols to process
+MAX_WEBSOCKET_SYMBOLS=30           # WebSocket subscriptions (API limit)
+```
+
 ### Environment Variables (.env)
 ```bash
 # Database connection
@@ -111,8 +152,15 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/tradebot
 # Redis connection  
 REDIS_URL=redis://localhost:6379
 
-# Trading symbols (comma-separated)
-SYMBOLS=AAPL,MSFT,AMZN,GOOG,TSLA
+# Symbol configuration (see above for modes)
+SYMBOL_MODE=popular
+MAX_SYMBOLS=500
+MAX_WEBSOCKET_SYMBOLS=30
+
+# Rate limiting
+BACKFILL_BATCH_SIZE=10
+BACKFILL_CONCURRENT_REQUESTS=3
+RATE_LIMIT_DELAY=0.5
 
 # Alpaca API credentials
 ALPACA_KEY=your_alpaca_key_here
@@ -209,6 +257,42 @@ docker-compose run --rm market_data python -m tradebot.backfill.alpaca_historica
 - **Free tier compatible** (uses IEX feed)
 - **Automatic retry** logic for API failures
 - **Batch processing** with rate limiting
+- **All US stocks** support with intelligent filtering
+
+## 🎯 Symbol Management
+
+### Management Commands
+```bash
+# Test your current configuration
+python manage_symbols.py test
+
+# List symbols for different modes
+python manage_symbols.py list popular --limit 20
+python manage_symbols.py list all --limit 50
+
+# Fetch all symbols from Alpaca API
+python manage_symbols.py fetch
+
+# Benchmark different modes
+python manage_symbols.py benchmark
+
+# Create sample configurations
+python manage_symbols.py samples
+```
+
+### Symbol Filtering
+The system automatically filters symbols to include only:
+- ✅ **Active** and **tradeable** stocks
+- ✅ **Major exchanges**: NYSE, NASDAQ, AMEX
+- ✅ **Standard symbols**: Excludes warrants, rights, units
+- ✅ **Reasonable price range**: Filters penny stocks and extreme outliers
+- ❌ **Excludes**: SPACs, test symbols, complex derivatives
+
+### Performance Considerations
+- **WebSocket Limits**: Alpaca free tier supports 30 concurrent symbols
+- **Rate Limiting**: Built-in delays and batch processing
+- **Memory Management**: Configurable symbol limits
+- **Caching**: Daily symbol list caching for performance
 
 ## 🔄 Development Workflow
 

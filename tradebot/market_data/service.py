@@ -7,12 +7,18 @@ from typing import List
 
 from tradebot.common.bus import MessageBus
 from tradebot.common.models import PriceTick
+from tradebot.common.symbol_manager import SymbolManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("market_data")
 
-# Symbols to mock – can be overridden with environment variable
-SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+# Configuration
+SYMBOL_MODE = os.getenv("SYMBOL_MODE", "custom")
+LEGACY_SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+MAX_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "500"))
+
+# Will be populated by symbol manager
+SYMBOLS: List[str] = []
 
 # Realistic starting prices based on approximate current market values (as of June 2024)
 REALISTIC_PRICES = {
@@ -23,7 +29,8 @@ REALISTIC_PRICES = {
     "TSLA": 185.0,   # Tesla around $185
 }
 
-INITIAL_PRICES = {sym: REALISTIC_PRICES.get(sym, random.uniform(100, 300)) for sym in SYMBOLS}
+# Will be initialized after symbols are loaded
+INITIAL_PRICES = {}
 
 
 async def generate_ticks(bus: MessageBus, interval: float = 1.0):
@@ -66,8 +73,36 @@ async def generate_ticks(bus: MessageBus, interval: float = 1.0):
         await asyncio.sleep(interval)
 
 
+async def initialize_symbols():
+    """Initialize symbols based on configuration."""
+    global SYMBOLS, INITIAL_PRICES
+    
+    if SYMBOL_MODE == "custom":
+        SYMBOLS = LEGACY_SYMBOLS
+        logger.info("Using custom symbols: %s", SYMBOLS[:10])
+    else:
+        # Use symbol manager to get symbols
+        manager = SymbolManager()
+        all_symbols = await manager.initialize(SYMBOL_MODE)
+        
+        # Limit symbols to prevent overwhelming the system
+        SYMBOLS = all_symbols[:MAX_SYMBOLS]
+        logger.info("Loaded %d symbols in '%s' mode (limited to %d)", 
+                   len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
+        logger.info("First 10 symbols: %s", SYMBOLS[:10])
+    
+    # Initialize prices for all symbols
+    INITIAL_PRICES = {sym: REALISTIC_PRICES.get(sym, random.uniform(50, 500)) for sym in SYMBOLS}
+    logger.info("Initialized prices for %d symbols", len(INITIAL_PRICES))
+
+
 async def main():
-    logger.info("Market data service starting for symbols: %s", SYMBOLS)
+    logger.info("Market data service starting...")
+    
+    # Initialize symbols first
+    await initialize_symbols()
+    
+    logger.info("Market data service ready for %d symbols", len(SYMBOLS))
     bus = MessageBus()
     await bus.connect()
     await generate_ticks(bus)

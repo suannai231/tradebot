@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from tradebot.common.bus import MessageBus
 from tradebot.common.models import PriceTick
+from tradebot.common.symbol_manager import SymbolManager
 
 logger = logging.getLogger("alpaca_market_data")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -29,7 +30,13 @@ def check_credentials():
         return False
     return True
 
-SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+# Configuration
+SYMBOL_MODE = os.getenv("SYMBOL_MODE", "custom")
+LEGACY_SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+MAX_WEBSOCKET_SYMBOLS = int(os.getenv("MAX_WEBSOCKET_SYMBOLS", "30"))  # Alpaca free tier limit
+
+# Will be populated by symbol manager
+SYMBOLS: List[str] = []
 
 WS_URL = "wss://stream.data.alpaca.markets/v2/sip"
 
@@ -49,10 +56,16 @@ async def alpaca_stream(bus: MessageBus):
             logger.error("Authentication failed: %s", auth_data)
             return
 
-        # Subscribe to trades for selected symbols
-        sub_msg = {"action": "subscribe", "trades": SYMBOLS}
+        # Subscribe to trades for selected symbols (limited by WebSocket capacity)
+        websocket_symbols = SYMBOLS[:MAX_WEBSOCKET_SYMBOLS]
+        if len(SYMBOLS) > MAX_WEBSOCKET_SYMBOLS:
+            logger.warning("Limited to %d symbols for WebSocket (total: %d)", 
+                         MAX_WEBSOCKET_SYMBOLS, len(SYMBOLS))
+        
+        sub_msg = {"action": "subscribe", "trades": websocket_symbols}
         await ws.send(json.dumps(sub_msg))
-        logger.info("Subscribed to trades for %s", SYMBOLS)
+        logger.info("Subscribed to trades for %d symbols: %s", 
+                   len(websocket_symbols), websocket_symbols[:5])
 
         # Listen for messages
         message_count = 0
@@ -88,10 +101,32 @@ async def alpaca_stream(bus: MessageBus):
                 logger.info("Processed %d trades so far", message_count)
 
 
+async def initialize_symbols():
+    """Initialize symbols based on configuration."""
+    global SYMBOLS
+    
+    if SYMBOL_MODE == "custom":
+        SYMBOLS = LEGACY_SYMBOLS
+        logger.info("Using custom symbols: %s", SYMBOLS)
+    else:
+        # Use symbol manager to get symbols
+        manager = SymbolManager()
+        all_symbols = await manager.initialize(SYMBOL_MODE)
+        
+        # For WebSocket, we need to be more conservative with symbol count
+        max_symbols = min(len(all_symbols), MAX_WEBSOCKET_SYMBOLS * 2)  # Buffer for rotation
+        SYMBOLS = all_symbols[:max_symbols]
+        logger.info("Loaded %d symbols in '%s' mode (WebSocket will use %d)", 
+                   len(SYMBOLS), SYMBOL_MODE, min(len(SYMBOLS), MAX_WEBSOCKET_SYMBOLS))
+
+
 async def main():
     if not check_credentials():
         logger.error("Cannot start Alpaca service without credentials")
         return
+    
+    # Initialize symbols first
+    await initialize_symbols()
     
     bus = MessageBus()
     await bus.connect()

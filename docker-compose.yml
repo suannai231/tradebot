@@ -21,6 +21,14 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379
+      - SYMBOL_MODE=${SYMBOL_MODE:-custom}
+      - SYMBOLS=${SYMBOLS:-AAPL,MSFT,AMZN,GOOG,TSLA}
+      - MAX_SYMBOLS=${MAX_SYMBOLS:-500}
+      - MAX_WEBSOCKET_SYMBOLS=${MAX_WEBSOCKET_SYMBOLS:-30}
+      - ALPACA_KEY=${ALPACA_KEY}
+      - ALPACA_SECRET=${ALPACA_SECRET}
+    volumes:
+      - ./symbols_cache.json:/app/symbols_cache.json:ro
     depends_on:
       - redis
 
@@ -32,6 +40,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - ALPACA_KEY=${ALPACA_KEY}
       - ALPACA_SECRET=${ALPACA_SECRET}
+      - SYMBOL_MODE=${SYMBOL_MODE:-custom}
+      - SYMBOLS=${SYMBOLS:-AAPL,MSFT,AMZN,GOOG,TSLA}
+      - MAX_SYMBOLS=${MAX_SYMBOLS:-500}
+      - MAX_WEBSOCKET_SYMBOLS=${MAX_WEBSOCKET_SYMBOLS:-30}
     depends_on:
       - redis
 
@@ -42,6 +54,10 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379
       - POLYGON_API_KEY=${POLYGON_API_KEY}
+      - SYMBOL_MODE=${SYMBOL_MODE:-custom}
+      - SYMBOLS=${SYMBOLS:-AAPL,MSFT,AMZN,GOOG,TSLA}
+      - MAX_SYMBOLS=${MAX_SYMBOLS:-500}
+      - MAX_WEBSOCKET_SYMBOLS=${MAX_WEBSOCKET_SYMBOLS:-30}
     depends_on:
       - redis
 

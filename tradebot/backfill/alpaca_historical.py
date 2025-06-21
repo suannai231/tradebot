@@ -9,6 +9,7 @@ import asyncpg
 from dotenv import load_dotenv
 
 from tradebot.common.models import PriceTick
+from tradebot.common.symbol_manager import SymbolManager
 
 load_dotenv()
 
@@ -18,7 +19,13 @@ logger = logging.getLogger("alpaca_backfill")
 ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/tradebot")
-SYMBOLS = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+# Configuration
+SYMBOL_MODE = os.getenv("SYMBOL_MODE", "custom")
+LEGACY_SYMBOLS = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+MAX_BACKFILL_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "500"))
+
+# Will be populated based on mode
+SYMBOLS = []
 
 BASE_URL = "https://data.alpaca.markets/v2/stocks"
 
@@ -164,12 +171,33 @@ async def init_database(pool: asyncpg.Pool):
         """)
 
 
+async def initialize_symbols():
+    """Initialize symbols based on configuration."""
+    global SYMBOLS
+    
+    if SYMBOL_MODE == "custom":
+        SYMBOLS = LEGACY_SYMBOLS
+        logger.info("Using custom symbols for backfill: %s", SYMBOLS)
+    else:
+        # Use symbol manager to get symbols
+        manager = SymbolManager()
+        all_symbols = await manager.initialize(SYMBOL_MODE)
+        
+        # Limit symbols for backfill to respect rate limits
+        SYMBOLS = all_symbols[:MAX_BACKFILL_SYMBOLS]
+        logger.info("Loaded %d symbols in '%s' mode for backfill (limited to %d)", 
+                   len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
+
+
 async def main():
     if not (ALPACA_KEY and ALPACA_SECRET):
         logger.error("Set ALPACA_KEY and ALPACA_SECRET environment variables")
         return
     
-    logger.info("Starting historical data backfill for symbols: %s", SYMBOLS)
+    # Initialize symbols first
+    await initialize_symbols()
+    
+    logger.info("Starting historical data backfill for %d symbols", len(SYMBOLS))
     
     # Database setup
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
@@ -177,13 +205,36 @@ async def main():
     
     # HTTP session for API calls
     async with aiohttp.ClientSession() as session:
-        # Backfill each symbol
-        for symbol in SYMBOLS:
-            try:
-                await backfill_symbol(session, pool, symbol.strip(), days_back=90)
-                await asyncio.sleep(1)  # Rate limiting
-            except Exception as e:
-                logger.error("Failed to backfill %s: %s", symbol, e)
+        # Process symbols in batches to manage rate limits and memory
+        batch_size = 10  # Process 10 symbols at a time
+        total_symbols = len(SYMBOLS)
+        
+        for i in range(0, total_symbols, batch_size):
+            batch = SYMBOLS[i:i + batch_size]
+            logger.info("Processing batch %d/%d: symbols %d-%d", 
+                       (i // batch_size) + 1, 
+                       (total_symbols + batch_size - 1) // batch_size,
+                       i + 1, min(i + batch_size, total_symbols))
+            
+            # Process batch concurrently with semaphore for rate limiting
+            semaphore = asyncio.Semaphore(3)  # Max 3 concurrent requests
+            
+            async def process_symbol_with_limit(symbol):
+                async with semaphore:
+                    try:
+                        await backfill_symbol(session, pool, symbol.strip(), days_back=90)
+                        await asyncio.sleep(0.5)  # Rate limiting between requests
+                    except Exception as e:
+                        logger.error("Failed to backfill %s: %s", symbol, e)
+            
+            # Process batch concurrently
+            tasks = [process_symbol_with_limit(symbol) for symbol in batch]
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Longer pause between batches
+            if i + batch_size < total_symbols:
+                logger.info("Batch completed, waiting 5 seconds before next batch...")
+                await asyncio.sleep(5)
     
     await pool.close()
     logger.info("Backfill completed")
