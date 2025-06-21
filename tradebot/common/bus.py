@@ -21,12 +21,26 @@ class MessageBus:
     # ---------------------------------------------------------------------
     # Publish
     # ---------------------------------------------------------------------
-    async def publish(self, stream: str, message: Dict[str, Any]) -> None:
-        """Publish a JSON-serialisable dict to *stream*."""
+    async def publish(self, stream: str, message: Dict[str, Any] | Any) -> None:
+        """Publish *message* to *stream*.
+
+        *message* can be a plain dict or a Pydantic model. Datetime objects are
+        automatically converted to ISO-8601 strings via ``default=str``.
+        """
         if self._redis is None:
             await self.connect()
         assert self._redis is not None
-        await self._redis.xadd(stream, {"data": json.dumps(message)})
+
+        if hasattr(message, "model_dump"):
+            # Pydantic v2 model
+            payload = message.model_dump()
+        elif hasattr(message, "dict"):
+            # Pydantic v1 model or similar
+            payload = message.dict()
+        else:
+            payload = message
+
+        await self._redis.xadd(stream, {"data": json.dumps(payload, default=str)})
 
     # ---------------------------------------------------------------------
     # Subscribe

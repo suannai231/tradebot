@@ -26,8 +26,8 @@ async def generate_ticks(bus: MessageBus, interval: float = 1.0):
             INITIAL_PRICES[symbol] = price
 
             tick = PriceTick(symbol=symbol, price=round(price, 2), timestamp=datetime.now(tz=timezone.utc))
-            await bus.publish("price.ticks", tick.dict())
-            logger.debug("Published tick %s", tick.json())
+            await bus.publish("price.ticks", tick)
+            logger.debug("Published tick %s", tick.model_dump_json())
         await asyncio.sleep(interval)
 
 

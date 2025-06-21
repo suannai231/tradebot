@@ -1,0 +1,70 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_DB: tradebot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+
+  market_data:
+    build: .
+    command: python -m tradebot.market_data.service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  strategy:
+    build: .
+    command: python -m tradebot.strategy.service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  execution:
+    build: .
+    command: python -m tradebot.execution.service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  storage:
+    build: .
+    command: python -m tradebot.storage.timeseries_service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+    depends_on:
+      - redis
+      - timescaledb
+
+  api:
+    build: .
+    command: python -m tradebot.api.history_service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+    ports:
+      - "8000:8000"
+    depends_on:
+      - timescaledb
+
+volumes:
+  timescale_data: 
