@@ -27,6 +27,7 @@ services:
       - MAX_WEBSOCKET_SYMBOLS=${MAX_WEBSOCKET_SYMBOLS:-30}
       - ALPACA_KEY=${ALPACA_KEY}
       - ALPACA_SECRET=${ALPACA_SECRET}
+      - SERVICE_NAME=market_data
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
     depends_on:
@@ -44,6 +45,7 @@ services:
       - SYMBOLS=${SYMBOLS:-AAPL,MSFT,AMZN,GOOG,TSLA}
       - MAX_SYMBOLS=${MAX_SYMBOLS:-500}
       - MAX_WEBSOCKET_SYMBOLS=${MAX_WEBSOCKET_SYMBOLS:-30}
+      - SERVICE_NAME=alpaca_service
     depends_on:
       - redis
 
@@ -67,6 +69,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379
+      - SERVICE_NAME=strategy
     depends_on:
       - redis
 
@@ -76,6 +79,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379
+      - SERVICE_NAME=execution
     depends_on:
       - redis
 
@@ -86,19 +90,38 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - SERVICE_NAME=storage
     depends_on:
       - redis
       - timescaledb
 
   api:
     build: .
-    command: python -m tradebot.api.history_service
+    command: uvicorn tradebot.api.history_service:app --host 0.0.0.0 --port 8000
     environment:
       - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+      - SERVICE_NAME=api
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     ports:
       - "8000:8000"
     depends_on:
+      - timescaledb
+
+  dashboard:
+    build: .
+    command: python -m tradebot.dashboard.main
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - SERVICE_NAME=dashboard
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./tradebot/dashboard:/app/tradebot/dashboard
+    depends_on:
+      - redis
       - timescaledb
 
 volumes:

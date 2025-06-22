@@ -7,10 +7,15 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
+import redis.asyncio as redis
+import asyncio
+from tradebot.common.bus import MessageBus
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/tradebot")
+SERVICE_NAME = os.getenv("SERVICE_NAME")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 app = FastAPI(title="Tradebot Historical Data API", version="1.0.0")
 
@@ -43,10 +48,32 @@ class HistoricalStats(BaseModel):
     latest_price: float
 
 
+async def _heartbeat():
+    if not SERVICE_NAME:
+        return
+    r = redis.from_url(REDIS_URL)
+    key = f"service:{SERVICE_NAME}:heartbeat"
+    # set immediately then every 30 s
+    while True:
+        try:
+            await r.set(key, datetime.now(timezone.utc).isoformat())
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
+
 @app.on_event("startup")
 async def startup():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=20)
+    # start heartbeat if service name provided
+    asyncio.get_running_loop().create_task(_heartbeat())
+    # ensure MessageBus heartbeat auto-starts (shares same SERVICE_NAME)
+    try:
+        bus = MessageBus()
+        await bus.connect()
+    except Exception as e:
+        print(f"MessageBus connect failed: {e}")
 
 
 @app.on_event("shutdown")
@@ -244,5 +271,5 @@ if __name__ == "__main__":
         "tradebot.api.history_service:app",
         host="0.0.0.0",
         port=8000,
-        reload=True
+        reload=False
     ) 

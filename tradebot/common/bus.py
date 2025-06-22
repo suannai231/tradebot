@@ -1,12 +1,28 @@
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from typing import AsyncIterator, Dict, Any
 
 import redis.asyncio as redis
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+SERVICE_NAME = os.getenv("SERVICE_NAME")
+_HEARTBEAT_TASK_STARTED = False
 
+async def _heartbeat_task():
+    """Background coroutine that updates service heartbeat every 30 s."""
+    if not SERVICE_NAME:
+        return  # nothing to do
+    r = redis.from_url(REDIS_URL)
+    key = f"service:{SERVICE_NAME}:heartbeat"
+    while True:
+        try:
+            await r.set(key, datetime.now(timezone.utc).isoformat())
+        except Exception:
+            # ignore transient Redis errors; try again next cycle
+            pass
+        await asyncio.sleep(30)
 
 class MessageBus:
     """Lightweight wrapper around Redis Streams for pub-sub style messaging."""
@@ -15,8 +31,17 @@ class MessageBus:
         self._redis: redis.Redis | None = None
 
     async def connect(self) -> None:
+        global _HEARTBEAT_TASK_STARTED
         if self._redis is None:
             self._redis = redis.from_url(REDIS_URL, decode_responses=True)
+        # start heartbeat once per process
+        if SERVICE_NAME and not _HEARTBEAT_TASK_STARTED:
+            try:
+                asyncio.get_running_loop().create_task(_heartbeat_task())
+                _HEARTBEAT_TASK_STARTED = True
+            except RuntimeError:
+                # no running loop yet (likely synchronous context); ignore
+                pass
 
     # ---------------------------------------------------------------------
     # Publish

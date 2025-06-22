@@ -26,4 +26,14 @@ class Signal(BaseModel):
     symbol: str
     side: Side
     confidence: float = Field(ge=0, le=1, description="Confidence between 0 and 1")
-    timestamp: datetime 
+    timestamp: datetime
+
+
+class TradeSignal(BaseModel):
+    """Trading signal model for dashboard compatibility"""
+    symbol: str = Field(..., description="Ticker symbol e.g. AAPL")
+    signal_type: str = Field(..., description="Signal type: BUY, SELL, HOLD")
+    price: float = Field(..., description="Price at signal generation")
+    timestamp: datetime = Field(..., description="Signal timestamp in UTC")
+    strategy: str | None = Field(None, description="Strategy that generated the signal")
+    confidence: float | None = Field(None, ge=0, le=1, description="Signal confidence 0-1") 

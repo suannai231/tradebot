@@ -1,0 +1,273 @@
+/* Trading Bot Dashboard Styles */
+
+body {
+    background-color: #f8f9fa;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.navbar-brand {
+    font-weight: bold;
+}
+
+.card {
+    border: none;
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    transition: box-shadow 0.15s ease-in-out;
+}
+
+.card:hover {
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+.card-header {
+    background-color: #fff;
+    border-bottom: 1px solid #dee2e6;
+    font-weight: 600;
+}
+
+/* Status indicators */
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 8px;
+}
+
+.status-healthy {
+    background-color: #28a745;
+    animation: pulse-green 2s infinite;
+}
+
+.status-unhealthy {
+    background-color: #dc3545;
+    animation: pulse-red 2s infinite;
+}
+
+.status-unknown {
+    background-color: #6c757d;
+}
+
+.status-error {
+    background-color: #fd7e14;
+}
+
+@keyframes pulse-green {
+    0% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(40, 167, 69, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
+}
+
+@keyframes pulse-red {
+    0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+}
+
+/* Trading signals */
+.signal-item {
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border-left: 4px solid;
+    font-size: 0.9rem;
+    animation: slideInRight 0.3s ease-out;
+}
+
+.signal-buy {
+    background-color: rgba(40, 167, 69, 0.1);
+    border-left-color: #28a745;
+}
+
+.signal-sell {
+    background-color: rgba(220, 53, 69, 0.1);
+    border-left-color: #dc3545;
+}
+
+.signal-hold {
+    background-color: rgba(255, 193, 7, 0.1);
+    border-left-color: #ffc107;
+}
+
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* Activity log */
+.activity-item {
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 0.85rem;
+    animation: fadeIn 0.5s ease-in;
+}
+
+.activity-item:last-child {
+    border-bottom: none;
+}
+
+.activity-timestamp {
+    color: #6c757d;
+    font-size: 0.75rem;
+}
+
+.activity-type {
+    font-weight: 600;
+    margin-right: 8px;
+}
+
+.activity-price-update {
+    color: #007bff;
+}
+
+.activity-signal {
+    color: #28a745;
+}
+
+.activity-error {
+    color: #dc3545;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Market summary table */
+.table th {
+    border-top: none;
+    font-weight: 600;
+    color: #495057;
+    font-size: 0.9rem;
+}
+
+.table td {
+    font-size: 0.9rem;
+    vertical-align: middle;
+}
+
+.price-change-positive {
+    color: #28a745;
+    font-weight: 600;
+}
+
+.price-change-negative {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+.price-change-neutral {
+    color: #6c757d;
+}
+
+/* Connection status */
+#connection-status.text-success {
+    animation: pulse-green 2s infinite;
+}
+
+#connection-status.text-danger {
+    animation: pulse-red 2s infinite;
+}
+
+/* Chart container */
+.chart-container {
+    position: relative;
+    height: 300px;
+}
+
+/* System health cards */
+.health-service {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.health-service:last-child {
+    border-bottom: none;
+}
+
+.service-name {
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.service-status {
+    display: flex;
+    align-items: center;
+    font-size: 0.85rem;
+}
+
+.service-uptime {
+    color: #6c757d;
+    font-size: 0.75rem;
+    margin-top: 2px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container-fluid {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+    
+    .card-body {
+        padding: 1rem 0.75rem;
+    }
+    
+    .table-responsive {
+        font-size: 0.8rem;
+    }
+}
+
+/* Loading animations */
+.loading-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #007bff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+
+/* Update flash effect */
+.flash-update {
+    animation: flashUpdate 0.5s ease-in-out;
+}
+
+@keyframes flashUpdate {
+    0% { background-color: rgba(255, 255, 0, 0.3); }
+    100% { background-color: transparent; }
+} 

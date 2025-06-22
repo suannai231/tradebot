@@ -2,29 +2,29 @@
 
 ## Overview
 
-A comprehensive **event-driven trading bot system** for US equities built with Python, featuring real-time data processing, technical analysis, and automated trading capabilities. The system follows a microservices architecture with full OHLCV data support and persistent storage.
+A comprehensive **event-driven trading bot system** for US equities built with Python, featuring real-time data processing, technical analysis, and automated trading capabilities. The system follows a microservices architecture with full OHLCV data support, persistent storage, and **real-time web dashboard**.
 
 ## 🏗️ Architecture
 
-The system consists of 7 microservices communicating via Redis Streams:
+The system consists of 8 microservices communicating via Redis Streams:
 
 ```
 ┌─────────────────┐  price.ticks   ┌─────────────┐  orders.new   ┌──────────────┐
 │   Market Data   │ ──────────────▶│  Strategy   │ ─────────────▶│  Execution   │
 │   Services      │                │   Engine    │               │   Service    │
 └─────────────────┘                └─────────────┘               └──────────────┘
-         │                                                               │
-         ▼                                                               ▼
+         │                                 │                              │
+         ▼                                 ▼                              ▼
 ┌─────────────────┐                ┌─────────────┐               ┌──────────────┐
-│  Storage        │                │ TimescaleDB │               │ Trade Logs   │
-│  Service        │ ──────────────▶│ Database    │◀──────────────│ & Analytics  │
+│  Storage        │                │ Real-time   │               │ Trade Logs   │
+│  Service        │ ──────────────▶│ Dashboard   │◀──────────────│ & Analytics  │
 └─────────────────┘                └─────────────┘               └──────────────┘
-                                           │
-                                           ▼
-                                   ┌─────────────┐
-                                   │ REST API    │
-                                   │ Service     │
-                                   └─────────────┘
+         │                                 │
+         ▼                                 ▼
+┌─────────────────┐                ┌─────────────┐
+│   TimescaleDB   │                │ REST API    │
+│   Database      │◀───────────────│ Service     │
+└─────────────────┘                └─────────────┘
 ```
 
 ## 🚀 Quick Start
@@ -53,6 +53,7 @@ docker-compose logs -f
 ```
 
 ### 3. Access the System
+- **🎛️ Real-time Dashboard**: http://localhost:8001
 - **API Documentation**: http://localhost:8000/docs
 - **Historical Data**: http://localhost:8000/history/AAPL
 - **Symbols Overview**: http://localhost:8000/symbols
@@ -69,8 +70,45 @@ docker-compose logs -f
 | **execution** | Trade execution (placeholder) | - | ✅ Active |
 | **storage** | TimescaleDB data persistence | - | ✅ Active |
 | **api** | REST API for historical data | 8000 | ✅ Active |
+| **dashboard** | **Real-time monitoring web UI** | **8001** | ✅ **Active** |
 | **redis** | Message bus | 6379 | ✅ Active |
 | **timescaledb** | Time-series database | 5432 | ✅ Active |
+
+## 🎛️ Real-time Dashboard
+
+### Features
+- **📊 Live Price Charts**: Real-time price updates with Chart.js
+- **📈 Market Summary**: Top symbols with price changes and volume
+- **🚨 Trading Signals**: Live BUY/SELL signals with confidence scores
+- **💚 System Health**: Service status monitoring with heartbeats
+- **📋 Activity Feed**: Real-time event log with WebSocket updates
+- **📱 Responsive Design**: Works on desktop, tablet, and mobile
+
+### Dashboard Sections
+1. **System Overview Cards**: Total symbols, active symbols, ticks, signals
+2. **Market Summary Table**: Price changes, volume, last update times
+3. **Real-time Price Chart**: Select any symbol for live price visualization
+4. **Trading Signals Panel**: Recent BUY/SELL signals with timestamps
+5. **System Health Monitor**: Service status with error counts
+6. **Live Activity Feed**: Real-time updates on all system events
+
+### Quick Access
+```bash
+# Start dashboard only (requires Redis + TimescaleDB)
+python run_dashboard.py
+
+# Or with Docker
+docker-compose up -d dashboard
+
+# View in browser
+open http://localhost:8001
+```
+
+### WebSocket Features
+- **Real-time Updates**: Live price feeds without page refresh
+- **Auto-reconnect**: Handles connection drops gracefully
+- **Connection Status**: Visual indicator in top navigation
+- **Responsive Charts**: Smooth animations for price updates
 
 ## 📁 Project Structure
 
@@ -92,11 +130,19 @@ Trade/
 │   │   └── timeseries_service.py # TimescaleDB storage
 │   ├── api/                    # REST API
 │   │   └── history_service.py  # FastAPI endpoints
+│   ├── dashboard/              # 🆕 Real-time web dashboard
+│   │   ├── main.py             # FastAPI + WebSocket server
+│   │   ├── templates/          # HTML templates
+│   │   │   └── dashboard.html  # Main dashboard page
+│   │   └── static/             # CSS, JS, assets
+│   │       ├── dashboard.css   # Dashboard styling
+│   │       └── dashboard.js    # WebSocket + Chart.js
 │   └── backfill/               # Historical data
 │       └── alpaca_historical.py # Alpaca data backfill
 ├── docker-compose.yml          # Service orchestration
 ├── Dockerfile                  # Container definition
 ├── requirements.txt            # Python dependencies
+├── run_dashboard.py            # 🆕 Quick dashboard launcher
 ├── .env                        # Environment variables
 └── README.md                   # This file
 ```
