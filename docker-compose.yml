@@ -1,5 +1,3 @@
-version: "3.8"
-
 # Load variables from developer overrides (.env) and defaults (.env.example)
 # Both files live in the repo root; .env is git-ignored.
 
@@ -26,6 +24,8 @@ services:
     env_file: [ .env, .env.example ]
     environment:
       - SERVICE_NAME=market_data
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
     depends_on: [ redis ]
@@ -36,6 +36,8 @@ services:
     env_file: [ .env, .env.example ]
     environment:
       - SERVICE_NAME=strategy
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     depends_on: [ redis ]
 
   execution:
@@ -44,6 +46,8 @@ services:
     env_file: [ .env, .env.example ]
     environment:
       - SERVICE_NAME=execution
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     depends_on: [ redis ]
 
   storage:
@@ -52,6 +56,8 @@ services:
     env_file: [ .env, .env.example ]
     environment:
       - SERVICE_NAME=storage
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     depends_on: [ redis, timescaledb ]
 
   # ───────── API + Dashboard ─────────
@@ -61,6 +67,8 @@ services:
     env_file: [ .env, .env.example ]
     environment:
       - SERVICE_NAME=api
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     ports: ["8000:8000"]
     depends_on: [ timescaledb ]
 
@@ -73,6 +81,8 @@ services:
     env_file: [ .env, .env.example ]
     environment:
       - SERVICE_NAME=dashboard
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     ports: ["8001:8001"]
     depends_on: [ redis, timescaledb ]
 

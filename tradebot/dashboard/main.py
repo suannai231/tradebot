@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 import asyncpg
 import redis.asyncio as redis
@@ -35,18 +36,64 @@ logger = logging.getLogger("dashboard")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/tradebot")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+# Global state
+db_pool: Optional[asyncpg.Pool] = None
+redis_client: Optional[redis.Redis] = None
+message_bus: Optional[MessageBus] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global db_pool, redis_client, message_bus
+    
+    logger.info("Starting Trading Bot Dashboard...")
+    
+    # Initialize database pool
+    try:
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        logger.info("Database pool initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize database pool: {e}")
+    
+    # Initialize Redis client
+    try:
+        redis_client = redis.from_url(REDIS_URL)
+        await redis_client.ping()
+        logger.info("Redis client initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize Redis client: {e}")
+    
+    # Initialize message bus for real-time updates
+    try:
+        message_bus = MessageBus()
+        await message_bus.connect()
+        logger.info("Message bus connected")
+        
+        # Start background task to listen for updates
+        asyncio.create_task(listen_for_updates())
+    except Exception as e:
+        logger.error(f"Failed to initialize message bus: {e}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Trading Bot Dashboard...")
+    
+    if db_pool:
+        await db_pool.close()
+    if redis_client:
+        await redis_client.close()
+    if message_bus:
+        await message_bus.close()
+
+
 # FastAPI app
-app = FastAPI(title="Trading Bot Dashboard", version="1.0.0")
+app = FastAPI(title="Trading Bot Dashboard", version="1.0.0", lifespan=lifespan)
 
 # Templates and static files
 dashboard_dir = Path(__file__).parent
 templates = Jinja2Templates(directory=dashboard_dir / "templates")
 app.mount("/static", StaticFiles(directory=dashboard_dir / "static"), name="static")
-
-# Global state
-db_pool: Optional[asyncpg.Pool] = None
-redis_client: Optional[redis.Redis] = None
-message_bus: Optional[MessageBus] = None
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -116,51 +163,7 @@ class SystemHealth(BaseModel):
     last_heartbeat: datetime
     error_count: int
 
-# Startup and shutdown events
-@app.on_event("startup")
-async def startup_event():
-    global db_pool, redis_client, message_bus
-    
-    logger.info("Starting Trading Bot Dashboard...")
-    
-    # Initialize database pool
-    try:
-        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
-        logger.info("Database pool initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize database pool: {e}")
-    
-    # Initialize Redis client
-    try:
-        redis_client = redis.from_url(REDIS_URL)
-        await redis_client.ping()
-        logger.info("Redis client initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize Redis client: {e}")
-    
-    # Initialize message bus for real-time updates
-    try:
-        message_bus = MessageBus()
-        await message_bus.connect()
-        logger.info("Message bus connected")
-        
-        # Start background task to listen for updates
-        asyncio.create_task(listen_for_updates())
-    except Exception as e:
-        logger.error(f"Failed to initialize message bus: {e}")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    global db_pool, redis_client, message_bus
-    
-    logger.info("Shutting down Trading Bot Dashboard...")
-    
-    if db_pool:
-        await db_pool.close()
-    if redis_client:
-        await redis_client.close()
-    if message_bus:
-        await message_bus.close()
 
 # Background task to listen for real-time updates
 async def listen_for_updates():

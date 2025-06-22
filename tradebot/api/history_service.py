@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
 from typing import List, Optional
+from contextlib import asynccontextmanager
 
 import asyncpg
 import uvicorn
@@ -17,10 +18,32 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localho
 SERVICE_NAME = os.getenv("SERVICE_NAME")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
-app = FastAPI(title="Tradebot Historical Data API", version="1.0.0")
-
 # Database connection pool
 pool: Optional[asyncpg.Pool] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global pool
+    # Startup
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=20)
+    # start heartbeat if service name provided
+    asyncio.get_running_loop().create_task(_heartbeat())
+    # ensure MessageBus heartbeat auto-starts (shares same SERVICE_NAME)
+    try:
+        bus = MessageBus()
+        await bus.connect()
+    except Exception as e:
+        print(f"MessageBus connect failed: {e}")
+    
+    yield
+    
+    # Shutdown
+    if pool:
+        await pool.close()
+
+
+app = FastAPI(title="Tradebot Historical Data API", version="1.0.0", lifespan=lifespan)
 
 
 class HistoricalTick(BaseModel):
@@ -62,24 +85,7 @@ async def _heartbeat():
         await asyncio.sleep(30)
 
 
-@app.on_event("startup")
-async def startup():
-    global pool
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=20)
-    # start heartbeat if service name provided
-    asyncio.get_running_loop().create_task(_heartbeat())
-    # ensure MessageBus heartbeat auto-starts (shares same SERVICE_NAME)
-    try:
-        bus = MessageBus()
-        await bus.connect()
-    except Exception as e:
-        print(f"MessageBus connect failed: {e}")
 
-
-@app.on_event("shutdown")
-async def shutdown():
-    if pool:
-        await pool.close()
 
 
 @app.get("/")

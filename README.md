@@ -25,6 +25,8 @@ python demo_dashboard.py
 
 The first build takes ~2-3 minutes. Subsequent starts are instant.
 
+> **Note**: The system comes with working defaults and will start immediately. For custom configuration, copy `.env.example` to `.env` and modify as needed.
+
 ---
 
 ## 🏗️ Architecture

@@ -55,8 +55,8 @@ async def main():
 
         signal = strat.on_tick(tick)
         if signal:
-            await bus.publish("orders.new", signal.dict())
-            logger.info("Generated signal %s", signal.json())
+            await bus.publish("orders.new", signal.model_dump())
+            logger.info("Generated signal %s", signal.model_dump_json())
 
 
 if __name__ == "__main__":
