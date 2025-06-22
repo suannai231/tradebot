@@ -33,10 +33,10 @@ class MovingAverageStrategy:
 
         if short_ma > long_ma and self.last_side[tick.symbol] != Side.buy:
             self.last_side[tick.symbol] = Side.buy
-            return Signal(symbol=tick.symbol, side=Side.buy, confidence=abs(short_ma - long_ma) / long_ma, timestamp=tick.timestamp)
+            return Signal(symbol=tick.symbol, side=Side.buy, price=tick.price, confidence=abs(short_ma - long_ma) / long_ma, timestamp=tick.timestamp)
         elif short_ma < long_ma and self.last_side[tick.symbol] != Side.sell:
             self.last_side[tick.symbol] = Side.sell
-            return Signal(symbol=tick.symbol, side=Side.sell, confidence=abs(short_ma - long_ma) / long_ma, timestamp=tick.timestamp)
+            return Signal(symbol=tick.symbol, side=Side.sell, price=tick.price, confidence=abs(short_ma - long_ma) / long_ma, timestamp=tick.timestamp)
         return None
 
 

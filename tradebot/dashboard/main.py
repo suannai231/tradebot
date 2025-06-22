@@ -173,50 +173,63 @@ async def listen_for_updates():
     
     logger.info("Starting real-time update listener...")
     
-    try:
-        # Subscribe to price ticks
-        async for data in message_bus.subscribe("price.ticks"):
-            try:
-                if isinstance(data, dict):
-                    symbol = data.get("symbol")
-                    price = float(data.get("price", 0))
-                    ts = data.get("timestamp") or data.get("time")
-                    volume = data.get("volume", 0) or 0
-                else:
-                    # Assume PriceTick-like object
-                    symbol = getattr(data, "symbol", None)
-                    price = float(getattr(data, "price", 0))
-                    ts = getattr(data, "timestamp", None)
-                    if ts:
-                        ts = ts.isoformat()
-                    volume = getattr(data, "volume", 0) or 0
-                await manager.broadcast({
-                    "type": "price_update",
-                    "data": {
-                        "symbol": symbol,
-                        "price": price,
-                        "timestamp": ts,
-                        "volume": volume
-                    }
-                })
-            except Exception as e:
-                logger.warning(f"Malformed tick data: {e}")
-        
-        # Subscribe to trading signals
-        async for signal in message_bus.subscribe("trading.signals"):
-            if isinstance(signal, TradeSignal):
-                await manager.broadcast({
-                    "type": "trading_signal",
-                    "data": {
-                        "symbol": signal.symbol,
-                        "signal_type": signal.signal_type,
-                        "price": float(signal.price),
-                        "timestamp": signal.timestamp.isoformat(),
-                        "strategy": getattr(signal, 'strategy', 'unknown'),
-                        "confidence": getattr(signal, 'confidence', 0.0)
-                    }
-                })
+    async def listen_price_ticks():
+        """Listen for price tick updates"""
+        try:
+            async for data in message_bus.subscribe("price.ticks"):
+                try:
+                    if isinstance(data, dict):
+                        symbol = data.get("symbol")
+                        price = float(data.get("price", 0))
+                        ts = data.get("timestamp") or data.get("time")
+                        volume = data.get("volume", 0) or 0
+                    else:
+                        # Assume PriceTick-like object
+                        symbol = getattr(data, "symbol", None)
+                        price = float(getattr(data, "price", 0))
+                        ts = getattr(data, "timestamp", None)
+                        if ts:
+                            ts = ts.isoformat()
+                        volume = getattr(data, "volume", 0) or 0
+                    await manager.broadcast({
+                        "type": "price_update",
+                        "data": {
+                            "symbol": symbol,
+                            "price": price,
+                            "timestamp": ts,
+                            "volume": volume
+                        }
+                    })
+                except Exception as e:
+                    logger.warning(f"Malformed tick data: {e}")
+        except Exception as e:
+            logger.error(f"Error in price tick listener: {e}")
     
+    async def listen_trading_signals():
+        """Listen for trading signal updates"""
+        try:
+            logger.info("Starting trading signals listener...")
+            async for signal_data in message_bus.subscribe("trading.signals"):
+                try:
+                    logger.info(f"Received trading signal: {signal_data}")
+                    # Handle signal data (already in correct format from execution service)
+                    if isinstance(signal_data, dict):
+                        await manager.broadcast({
+                            "type": "trading_signal",
+                            "data": signal_data
+                        })
+                        logger.info(f"Broadcasted trading signal: {signal_data['symbol']} {signal_data['signal_type']}")
+                except Exception as e:
+                    logger.warning(f"Failed to process trading signal: {e}")
+        except Exception as e:
+            logger.error(f"Error in trading signals listener: {e}")
+    
+    try:
+        # Run both listeners concurrently
+        await asyncio.gather(
+            listen_price_ticks(),
+            listen_trading_signals()
+        )
     except Exception as e:
         logger.error(f"Error in update listener: {e}")
 

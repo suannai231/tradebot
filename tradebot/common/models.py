@@ -25,6 +25,7 @@ class Side(str, Enum):
 class Signal(BaseModel):
     symbol: str
     side: Side
+    price: float = Field(..., description="Price at which signal was generated")
     confidence: float = Field(ge=0, le=1, description="Confidence between 0 and 1")
     timestamp: datetime
 
