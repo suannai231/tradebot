@@ -1,110 +1,295 @@
-# Trade-Bot ‑ Multi-service Real-time Trading Demo
+# TradingBot - Microservices Trading System
 
-![Dashboard Screenshot](docs/dashboard.png)
+A real-time trading bot system built with Python, featuring microservices architecture, live market data processing, and a web-based dashboard for monitoring.
 
-## 1  Quick start
+![Dashboard](https://img.shields.io/badge/Dashboard-Live%20Updates-brightgreen)
+![Architecture](https://img.shields.io/badge/Architecture-Microservices-blue)
+![Database](https://img.shields.io/badge/Database-TimescaleDB-orange)
+
+## ⚡ Quick Start
 
 ```bash
-# clone & enter repo
-git clone <your fork/url>
+# Clone the repository
+git clone <your-repo-url>
 cd Trade
 
-# copy defaults and (optionally) add API keys
-cp .env.example .env   # <- edit ALPACA_KEY etc. if you have them
-
-# build & launch the full stack
+# Start the full system with Docker Compose
 docker compose up -d --build
 
-# open the live dashboard
+# Open the live dashboard
 open http://localhost:8001
+
+# (Optional) Generate demo data for dashboard
+python demo_dashboard.py
 ```
-The first build takes ≈2-3 minutes. Subsequent `docker compose up` starts instantly.
+
+The first build takes ~2-3 minutes. Subsequent starts are instant.
 
 ---
 
-## 2  Configuration
-All services read their settings from two env-files loaded by **docker-compose**:
+## 🏗️ Architecture
 
-| file              | committed | purpose                                    |
-|-------------------|-----------|--------------------------------------------|
-| `.env.example`    | **yes**   | canonical defaults for every variable      |
-| `.env`            | **no**    | developer overrides & private API keys     |
+The system follows a microservices architecture with the following components:
 
-Key variables:
+### Infrastructure Services
+| Service      | Image            | Port | Purpose                           |
+|--------------|------------------|------|-----------------------------------|
+| `redis`      | redis:7-alpine   | 6379 | Message bus & system heartbeats  |
+| `timescaledb`| timescaledb      | 5432 | Time-series data storage         |
 
-| Variable                     | Description                                               |
-|------------------------------|-----------------------------------------------------------|
-| `REDIS_URL`                  | Redis connection used by message-bus & heartbeats         |
-| `DATABASE_URL`               | TimescaleDB connection URL                                |
-| `SYMBOL_MODE`                | `all\|large\|mid\|small\|popular\|custom`              |
-| `SYMBOLS`                    | Comma list when `SYMBOL_MODE=custom`                      |
-| `MAX_SYMBOLS`                | Hard cap for data generator                               |
-| `MAX_WEBSOCKET_SYMBOLS`      | Concurrent Alpaca stream subscriptions                    |
-| `ALPACA_KEY / SECRET`        | (optional) live data keys                                 |
-| `POLYGON_API_KEY`            | (optional) live data key                                  |
-| `RATE_LIMIT_SLEEP`           | Seconds between historical-data HTTP calls                |
-| `CONCURRENT_REQUESTS`        | Threads for `fast_backfill.py`                            |
+### Core Services
+| Service      | Purpose                                    |
+|--------------|--------------------------------------------|
+| `market_data`| Real-time tick generation & data feeds    |
+| `strategy`   | Trading signal generation                  |
+| `execution`  | Trade execution (paper trading)           |
+| `storage`    | Writes market data to TimescaleDB         |
+| `api`        | REST API for historical data (port 8000)  |
+| `dashboard`  | Web UI & real-time monitoring (port 8001) |
 
-> **Tip**   Any change to `.env` requires `docker compose up -d` to propagate.
-
----
-
-## 3  Services (docker-compose)
-
-| Name          | Image / Build | Port | Purpose                                   |
-|---------------|--------------|------|-------------------------------------------|
-| `redis`       | redis:7       | 6379 | Message bus (Redis Streams) + heartbeats  |
-| `timescaledb` | timescaledb   | 5432 | Time-series storage (OHLCV ticks)         |
-| `market_data` | local build   | —    | Real-time tick generator (mock / Alpaca)  |
-| `strategy`    | local build   | —    | Signal engine                             |
-| `execution`   | local build   | —    | Paper-trading executor                    |
-| `storage`     | local build   | —    | Writes ticks to TimescaleDB               |
-| `api`         | local build   | 8000 | Historical REST API                       |
-| `dashboard`   | local build   | 8001 | Live Web UI (REST + WebSocket)            |
-
-The **dashboard** directory is bind-mounted, so HTML/JS edits appear after a simple browser refresh.
+### Communication
+- **Message Bus**: Redis Streams for real-time data flow
+- **Data Storage**: TimescaleDB for OHLCV market data
+- **Real-time Updates**: WebSocket connections for live dashboard
 
 ---
 
-## 4  System-Health panel
-Every container publishes a heartbeat once every 30 s to Redis:
+## ⚙️ Configuration
 
-```
-service:<SERVICE_NAME>:heartbeat   → ISO-8601 timestamp
-service:<SERVICE_NAME>:errors      → optional error counter
-```
+### Environment Variables
 
-The dashboard colour codes each row:
+The system reads configuration from environment variables. Key settings:
 
-| Status      | Condition                                   |
-|-------------|---------------------------------------------|
-| healthy     | heartbeat < 5 min ago & error_count == 0     |
-| unhealthy   | heartbeat ≥ 5 min                           |
-| error       | `service:*:errors` > 0                      |
-| unknown     | no heartbeat key found                      |
+| Variable                    | Default                                    | Description                                |
+|-----------------------------|--------------------------------------------|--------------------------------------------|
+| `DATABASE_URL`              | `postgresql://postgres:password@localhost:5432/tradebot` | TimescaleDB connection |
+| `REDIS_URL`                 | `redis://localhost:6379`                  | Redis connection for message bus           |
+| `SYMBOL_MODE`               | `custom`                                   | Symbol selection mode                      |
+| `SYMBOLS`                   | `AAPL,MSFT,AMZN,GOOG,TSLA`               | Custom symbol list (when mode=custom)     |
+| `MAX_SYMBOLS`               | `500`                                      | Maximum symbols to process                 |
+| `MAX_WEBSOCKET_SYMBOLS`     | `30`                                       | WebSocket subscription limit               |
+| `ALPACA_KEY`                | -                                          | Alpaca API key (optional)                  |
+| `ALPACA_SECRET`             | -                                          | Alpaca API secret (optional)               |
+| `POLYGON_API_KEY`           | -                                          | Polygon API key (optional)                 |
 
-You can reset a stuck error state with:
+### Symbol Modes
+
+| Mode       | Description                              | Count    |
+|------------|------------------------------------------|----------|
+| `custom`   | User-defined symbol list                | Variable |
+| `popular`  | Popular large-cap stocks                 | ~100     |
+| `large`    | Large-cap stocks                         | ~50      |
+| `mid`      | Mid-cap stocks                           | ~50      |
+| `small`    | Small-cap stocks                         | ~100     |
+| `all`      | All tradeable US stocks                  | Up to MAX_SYMBOLS |
+
+### Creating Configuration
+
+Create a `.env` file in the project root for custom settings:
 
 ```bash
-docker compose exec redis redis-cli DEL service:<name>:errors
+# Symbol configuration
+SYMBOL_MODE=popular
+MAX_SYMBOLS=100
+MAX_WEBSOCKET_SYMBOLS=30
+
+# Database connections
+DATABASE_URL=postgresql://postgres:password@localhost:5432/tradebot
+REDIS_URL=redis://localhost:6379
+
+# API credentials (optional - for live data)
+ALPACA_KEY=your_key_here
+ALPACA_SECRET=your_secret_here
+
+# Performance tuning
+BACKFILL_BATCH_SIZE=10
+BACKFILL_CONCURRENT_REQUESTS=3
+RATE_LIMIT_DELAY=0.5
 ```
 
 ---
 
-## 5  CLI utilities (optional)
+## 🛠️ CLI Tools
 
-All helper scripts live in project root:
+### Symbol Management
+```bash
+# List available symbols for different modes
+python manage_symbols.py list popular --limit 20
+python manage_symbols.py list all --limit 50
 
-| Script                  | Description                              |
-|-------------------------|------------------------------------------|
-| `manage_symbols.py`     | List / filter Alpaca symbol universe     |
-| `benchmark_backfill.py` | Measure historical back-fill performance |
-| `fast_backfill.py`      | High-concurrency back-fill               |
-| `run_dashboard.py`      | Run dashboard outside Docker             |
-| `demo_dashboard.py`     | Generate fake ticks for demo             |
+# Test current configuration
+python manage_symbols.py test
 
-Run any script with `python <script> --help` for options.
+# Fetch fresh symbol data from Alpaca
+python manage_symbols.py fetch
+
+# Benchmark different symbol modes
+python manage_symbols.py benchmark
+
+# Generate sample configuration files
+python manage_symbols.py samples
+```
+
+### Historical Data Backfill
+```bash
+# Standard backfill
+python fast_backfill.py
+
+# Benchmark different performance settings
+python benchmark_backfill.py
+```
+
+### Dashboard & Demo
+```bash
+# Run dashboard standalone (without Docker)
+python run_dashboard.py
+
+# Generate demo data for dashboard testing
+python demo_dashboard.py
+```
 
 ---
 
-Happy trading 🚀 
+## 📊 Dashboard Features
+
+The web dashboard (http://localhost:8001) provides:
+
+### Real-time Monitoring
+- **Live price updates** via WebSocket
+- **Trading signals** as they're generated
+- **System health** with service heartbeats
+- **Market summary** with top movers
+
+### System Health Panel
+Services are color-coded based on status:
+- 🟢 **Healthy**: Recent heartbeat, no errors
+- 🟡 **Unhealthy**: Stale heartbeat (>5 minutes)
+- 🔴 **Error**: Active error count > 0
+- ⚫ **Unknown**: No heartbeat found
+
+### Reset Error States
+```bash
+# Reset specific service errors
+docker compose exec redis redis-cli DEL service:market_data:errors
+
+# Reset all service errors
+docker compose exec redis redis-cli DEL service:*:errors
+```
+
+---
+
+## 🚀 Performance Optimization
+
+### Backfill Performance
+The system includes optimized backfill configurations:
+
+| Configuration    | Batch Size | Concurrent | Rate Delay | Performance |
+|------------------|------------|------------|------------|-------------|
+| Conservative     | 10         | 3          | 0.5s       | Baseline    |
+| Balanced         | 15         | 6          | 0.3s       | ~2x faster  |
+| Aggressive       | 20         | 8          | 0.2s       | ~3x faster  |
+| High Performance | 25         | 10         | 0.15s      | ~4x faster  |
+
+Benchmark different settings:
+```bash
+python benchmark_backfill.py
+```
+
+### Database Optimization
+- TimescaleDB hypertables for efficient time-series queries
+- Connection pooling for concurrent access
+- Batch inserts for high-throughput writes
+
+---
+
+## 🔧 Development
+
+### Project Structure
+```
+tradebot/
+├── common/          # Shared utilities and models
+│   ├── bus.py       # Redis message bus
+│   ├── config.py    # Configuration management
+│   ├── models.py    # Data models (PriceTick, TradeSignal)
+│   └── symbol_manager.py  # Symbol loading and filtering
+├── market_data/     # Market data services
+├── strategy/        # Trading strategy engine
+├── execution/       # Trade execution service
+├── storage/         # Database storage service
+├── api/             # REST API service
+└── dashboard/       # Web dashboard
+    ├── main.py      # FastAPI application
+    ├── static/      # CSS/JS assets
+    └── templates/   # HTML templates
+```
+
+### Running Individual Services
+```bash
+# Run a specific service
+python -m tradebot.dashboard.main
+python -m tradebot.api.history_service
+python -m tradebot.market_data.service
+```
+
+### Dependencies
+- **Python 3.8+** with asyncio support
+- **Redis 7+** for message streaming
+- **TimescaleDB/PostgreSQL** for time-series data
+- **FastAPI** for web services
+- **Docker & Docker Compose** for orchestration
+
+---
+
+## 📈 Data Flow
+
+```
+Market Data → Redis Streams → Strategy Engine → Execution Engine
+     ↓              ↓              ↓               ↓
+Storage Service → TimescaleDB → API Service → Dashboard
+```
+
+1. **Market Data Service** generates or fetches real-time price ticks
+2. **Redis Streams** distribute ticks to all interested services
+3. **Strategy Service** analyzes ticks and generates trading signals
+4. **Execution Service** processes signals (paper trading)
+5. **Storage Service** persists all data to TimescaleDB
+6. **API Service** provides historical data access
+7. **Dashboard** displays real-time updates via WebSocket
+
+---
+
+## 🔍 Monitoring & Debugging
+
+### View Service Logs
+```bash
+# All services
+docker compose logs -f
+
+# Specific service
+docker compose logs -f dashboard
+docker compose logs -f market_data
+```
+
+### Check System Health
+```bash
+# Redis connection
+docker compose exec redis redis-cli ping
+
+# Database connection
+docker compose exec timescaledb psql -U postgres -d tradebot -c "SELECT NOW();"
+
+# Service heartbeats
+docker compose exec redis redis-cli KEYS "service:*:heartbeat"
+```
+
+### Performance Monitoring
+- Dashboard shows real-time system statistics
+- Service heartbeats tracked every 30 seconds
+- Error counts monitored per service
+- WebSocket connection status displayed
+
+---
+
+Happy Trading! 🚀
+
+For issues or questions, check the logs or create an issue in the repository. 
