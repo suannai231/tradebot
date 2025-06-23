@@ -213,31 +213,46 @@ class TradingDashboard {
     }
 
     updateSymbolSelector() {
-        const selector = document.getElementById('chart-symbol');
-        const currentSymbols = Array.from(selector.options).map(opt => opt.value).filter(v => v);
+        // With free-text input we don't need to maintain a list, but we'll still
+        // offer auto-completion if a datalist is present.
+        const input = document.getElementById('chart-symbol-input');
+        if (!input) return;
+
+        const datalistId = 'symbol-datalist';
+        let datalist = document.getElementById(datalistId);
+        if (!datalist) {
+            datalist = document.createElement('datalist');
+            datalist.id = datalistId;
+            document.body.appendChild(datalist);
+            input.setAttribute('list', datalistId);
+        }
+
+        const existing = new Set(Array.from(datalist.options).map(o => o.value));
         const availableSymbols = Array.from(this.priceData.keys()).sort();
-        
-        // Add new symbols
         availableSymbols.forEach(symbol => {
-            if (!currentSymbols.includes(symbol)) {
+            if (!existing.has(symbol)) {
                 const option = document.createElement('option');
                 option.value = symbol;
-                option.textContent = symbol;
-                selector.appendChild(option);
+                datalist.appendChild(option);
             }
         });
     }
 
     setupEventListeners() {
-        // Chart symbol selector
-        document.getElementById('chart-symbol').addEventListener('change', (e) => {
-            this.selectedSymbol = e.target.value;
-            if (this.selectedSymbol) {
-                this.updateChart();
-            } else {
-                this.clearChart();
-            }
-        });
+        // Symbol text input – press Enter to load chart
+        const input = document.getElementById('chart-symbol-input');
+        if (input) {
+            input.addEventListener('keyup', (e) => {
+                if (e.key === 'Enter') {
+                    this.selectedSymbol = e.target.value.trim().toUpperCase();
+                    if (this.selectedSymbol) {
+                        this.updateChart();
+                    } else {
+                        this.clearChart();
+                    }
+                }
+            });
+        }
     }
 
     clearChart() {
@@ -263,18 +278,13 @@ class TradingDashboard {
 
     async loadInitialData() {
         try {
-            // Load system stats
-            await this.loadSystemStats();
-            
-            // Load market summary
-            await this.loadMarketSummary();
-            
-            // Load system health
-            await this.loadSystemHealth();
-            
-            // Load recent signals
-            await this.loadRecentSignals();
-            
+            // Kick off all loads in parallel to minimise total load time
+            await Promise.all([
+                this.loadSystemStats(),
+                this.loadMarketSummary(),
+                this.loadSystemHealth(),
+                this.loadRecentSignals()
+            ]);
         } catch (error) {
             console.error('Error loading initial data:', error);
         }
@@ -304,20 +314,29 @@ class TradingDashboard {
             const response = await fetch('/api/market-summary?limit=20');
             const summary = await response.json();
             
-            // ensure symbol selector has these symbols
-            const selector = document.getElementById('chart-symbol');
-            const existing = new Set(Array.from(selector.options).map(o=>o.value));
-            summary.forEach(item=>{
-                if(item.symbol && !existing.has(item.symbol)){
-                    const opt=document.createElement('option');
-                    opt.value=item.symbol;
-                    opt.textContent=item.symbol;
-                    selector.appendChild(opt);
-                    existing.add(item.symbol);
+            // ensure autocomplete datalist is populated
+            const inputEl = document.getElementById('chart-symbol-input');
+            if (inputEl) {
+                const datalistId = 'symbol-datalist';
+                let datalist = document.getElementById(datalistId);
+                if (!datalist) {
+                    datalist = document.createElement('datalist');
+                    datalist.id = datalistId;
+                    document.body.appendChild(datalist);
+                    inputEl.setAttribute('list', datalistId);
                 }
-            });
+                const existing = new Set(Array.from(datalist.options).map(o=>o.value));
+                summary.forEach(item => {
+                    if (item.symbol && !existing.has(item.symbol)) {
+                        const opt = document.createElement('option');
+                        opt.value = item.symbol;
+                        datalist.appendChild(opt);
+                        existing.add(item.symbol);
+                    }
+                });
+            }
             
-            console.log('Symbol selector populated with', existing.size, 'items');
+            console.log('Market summary loaded with', summary.length, 'symbols');
             
             const tbody = document.getElementById('market-summary-body');
             
@@ -364,13 +383,22 @@ class TradingDashboard {
             }
             
             container.innerHTML = health.map(service => {
-                const statusClass = `status-${service.status}`;
+                const statusColors = {
+                    healthy: 'text-success',
+                    degraded: 'text-warning',
+                    unhealthy: 'text-danger',
+                    dead: 'text-secondary',
+                    unknown: 'text-muted',
+                    error: 'text-orange'
+                };
+                const colorClass = statusColors[service.status] || 'text-muted';
+
                 const lastHeartbeat = new Date(service.last_heartbeat);
                 const timeDiff = Math.floor((new Date() - lastHeartbeat) / 1000);
-                const timeAgo = timeDiff < 60 ? `${timeDiff}s ago` : 
-                             timeDiff < 3600 ? `${Math.floor(timeDiff/60)}m ago` : 
-                             `${Math.floor(timeDiff/3600)}h ago`;
-                
+                const timeAgo = timeDiff < 60 ? `${timeDiff}s ago` :
+                                timeDiff < 3600 ? `${Math.floor(timeDiff/60)}m ago` :
+                                `${Math.floor(timeDiff/3600)}h ago`;
+
                 return `
                     <div class="health-service">
                         <div>
@@ -378,7 +406,7 @@ class TradingDashboard {
                             <div class="service-uptime">Last seen: ${timeAgo}</div>
                         </div>
                         <div class="service-status">
-                            <span class="status-indicator ${statusClass}"></span>
+                            <i class="fas fa-circle ${colorClass} me-2"></i>
                             <span>${service.status}</span>
                             ${service.error_count > 0 ? `<span class="badge bg-warning ms-2">${service.error_count}</span>` : ''}
                         </div>
@@ -404,6 +432,10 @@ class TradingDashboard {
             }
             
             container.innerHTML = signals.map(signal => {
+                // Also mirror into activity feed so user sees historical activity
+                this.addActivityItem('signal',
+                    `${signal.signal_type.toUpperCase()} signal for ${signal.symbol} at $${signal.price.toFixed(2)}`,
+                    signal.timestamp);
                 return this.createSignalElement(signal);
             }).join('');
             
@@ -467,6 +499,11 @@ class TradingDashboard {
         `;
         
         container.insertAdjacentHTML('afterbegin', activityElement);
+        
+        // Ensure the scroll container is scrolled to the top so the newest item is visible immediately.
+        if (container.parentElement) {
+            container.parentElement.scrollTop = 0;
+        }
         
         // Keep only recent items
         this.activityLogItems.unshift({type, message, timestamp});

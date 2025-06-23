@@ -408,18 +408,26 @@ async def get_system_health() -> List[SystemHealth]:
                 
                 if last_heartbeat:
                     last_heartbeat = datetime.fromisoformat(last_heartbeat.decode())
-                    time_diff = datetime.now(timezone.utc) - last_heartbeat.replace(tzinfo=timezone.utc)
+                    current_time = datetime.now(timezone.utc)
                     
-                    # Check heartbeat frequency for better accuracy
-                    heartbeat_freq_key = f"service:{service}:heartbeat_count"
-                    current_count = await redis_client.get(heartbeat_freq_key) or 0
+                    # Ensure both timestamps are timezone-aware for accurate comparison
+                    if last_heartbeat.tzinfo is None:
+                        last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+                    
+                    time_diff = current_time - last_heartbeat
+                    time_diff_seconds = time_diff.total_seconds()
+                    
+                    # Debug logging for troubleshooting
+                    logger.debug(f"Service {service}: current={current_time.isoformat()}, "
+                               f"heartbeat={last_heartbeat.isoformat()}, "
+                               f"diff={time_diff_seconds:.1f}s")
                     
                     # More responsive health checks with multiple statuses
-                    if time_diff.total_seconds() < 30:
+                    if time_diff_seconds < 30:
                         status = "healthy"
-                    elif time_diff.total_seconds() < 60:  # 1 minute
+                    elif time_diff_seconds < 60:  # 1 minute
                         status = "degraded"
-                    elif time_diff.total_seconds() < 300:  # 5 minutes
+                    elif time_diff_seconds < 300:  # 5 minutes
                         status = "unhealthy"
                     else:
                         status = "dead"

@@ -34,22 +34,34 @@ body {
     margin-right: 8px;
 }
 
-.status-healthy {
-    background-color: #28a745;
+.status-indicator.status-healthy {
+    background-color: #28a745 !important;
     animation: pulse-green 2s infinite;
 }
 
-.status-unhealthy {
-    background-color: #dc3545;
+.status-indicator.status-degraded {
+    background-color: #ffc107 !important;
+    animation: pulse-yellow 2s infinite;
+    border: 2px solid #ff0000 !important;
+}
+
+.status-indicator.status-unhealthy {
+    background-color: #dc3545 !important;
     animation: pulse-red 2s infinite;
 }
 
-.status-unknown {
-    background-color: #6c757d;
+.status-indicator.status-dead {
+    background-color: #343a40 !important;
+    animation: pulse-black 2s infinite;
+    border: 2px solid #ff0000 !important;
 }
 
-.status-error {
-    background-color: #fd7e14;
+.status-indicator.status-unknown {
+    background-color: #6c757d !important;
+}
+
+.status-indicator.status-error {
+    background-color: #fd7e14 !important;
 }
 
 @keyframes pulse-green {
@@ -58,10 +70,22 @@ body {
     100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
 }
 
+@keyframes pulse-yellow {
+    0% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 193, 7, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0); }
+}
+
 @keyframes pulse-red {
     0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
     70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
     100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+}
+
+@keyframes pulse-black {
+    0% { box-shadow: 0 0 0 0 rgba(52, 58, 64, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(52, 58, 64, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(52, 58, 64, 0); }
 }
 
 /* Trading signals */
@@ -270,4 +294,5 @@ body {
 @keyframes flashUpdate {
     0% { background-color: rgba(255, 255, 0, 0.3); }
     100% { background-color: transparent; }
-} 
+} /* Cache bust 1750652139 */
+/* Debug red borders added 1750652228 */
