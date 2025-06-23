@@ -1,5 +1,5 @@
-# Load variables from developer overrides (.env) and defaults (.env.example)
-# Both files live in the repo root; .env is git-ignored.
+# Load variables from developer overrides (.env)
+# .env file lives in the repo root and is git-ignored.
 
 services:
   # ───────── Infrastructure ─────────
@@ -21,7 +21,7 @@ services:
   market_data:
     build: .
     command: python -m tradebot.market_data.service
-    env_file: [ .env, .env.example ]
+    env_file: [ .env ]
     environment:
       - SERVICE_NAME=market_data
       - REDIS_URL=redis://redis:6379
@@ -33,7 +33,7 @@ services:
   strategy:
     build: .
     command: python -m tradebot.strategy.service
-    env_file: [ .env, .env.example ]
+    env_file: [ .env ]
     environment:
       - SERVICE_NAME=strategy
       - REDIS_URL=redis://redis:6379
@@ -43,7 +43,7 @@ services:
   execution:
     build: .
     command: python -m tradebot.execution.service
-    env_file: [ .env, .env.example ]
+    env_file: [ .env ]
     environment:
       - SERVICE_NAME=execution
       - REDIS_URL=redis://redis:6379
@@ -53,7 +53,7 @@ services:
   storage:
     build: .
     command: python -m tradebot.storage.timeseries_service
-    env_file: [ .env, .env.example ]
+    env_file: [ .env ]
     environment:
       - SERVICE_NAME=storage
       - REDIS_URL=redis://redis:6379
@@ -64,7 +64,7 @@ services:
   api:
     build: .
     command: python -m tradebot.api.history_service
-    env_file: [ .env, .env.example ]
+    env_file: [ .env ]
     environment:
       - SERVICE_NAME=api
       - REDIS_URL=redis://redis:6379
@@ -78,7 +78,7 @@ services:
     volumes:
       - ./tradebot/dashboard:/app/tradebot/dashboard
     command: python -m tradebot.dashboard.main
-    env_file: [ .env, .env.example ]
+    env_file: [ .env ]
     environment:
       - SERVICE_NAME=dashboard
       - REDIS_URL=redis://redis:6379

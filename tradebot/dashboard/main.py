@@ -296,12 +296,14 @@ async def get_system_stats() -> SystemStats:
 
 @app.get("/api/market-summary")
 async def get_market_summary(limit: int = 20) -> List[MarketSummary]:
-    """Get market summary for top symbols"""
+    """Get market summary for top symbols (only recently active ones)"""
     try:
         if not db_pool:
             return []
         
         async with db_pool.acquire() as conn:
+            # Only show symbols updated in the last 10 minutes (currently active)
+            ten_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
             query = """
             WITH latest_prices AS (
                 SELECT DISTINCT ON (symbol) 
@@ -310,6 +312,7 @@ async def get_market_summary(limit: int = 20) -> List[MarketSummary]:
                     timestamp,
                     volume
                 FROM price_ticks 
+                WHERE timestamp > $2
                 ORDER BY symbol, timestamp DESC
             ),
             price_changes AS (
@@ -345,7 +348,7 @@ async def get_market_summary(limit: int = 20) -> List[MarketSummary]:
             LIMIT $1
             """
             
-            rows = await conn.fetch(query, limit)
+            rows = await conn.fetch(query, limit, ten_minutes_ago)
             
             return [
                 MarketSummary(
@@ -389,7 +392,7 @@ async def get_recent_signals(limit: int = 50) -> List[Dict[str, Any]]:
 
 @app.get("/api/system-health")
 async def get_system_health() -> List[SystemHealth]:
-    """Get system health status"""
+    """Get system health status with improved accuracy"""
     try:
         if not redis_client:
             return []
@@ -406,7 +409,20 @@ async def get_system_health() -> List[SystemHealth]:
                 if last_heartbeat:
                     last_heartbeat = datetime.fromisoformat(last_heartbeat.decode())
                     time_diff = datetime.now(timezone.utc) - last_heartbeat.replace(tzinfo=timezone.utc)
-                    status = "healthy" if time_diff.total_seconds() < 300 else "unhealthy"  # 5 minutes
+                    
+                    # Check heartbeat frequency for better accuracy
+                    heartbeat_freq_key = f"service:{service}:heartbeat_count"
+                    current_count = await redis_client.get(heartbeat_freq_key) or 0
+                    
+                    # More responsive health checks with multiple statuses
+                    if time_diff.total_seconds() < 30:
+                        status = "healthy"
+                    elif time_diff.total_seconds() < 60:  # 1 minute
+                        status = "degraded"
+                    elif time_diff.total_seconds() < 300:  # 5 minutes
+                        status = "unhealthy"
+                    else:
+                        status = "dead"
                 else:
                     last_heartbeat = datetime.now(timezone.utc)
                     status = "unknown"
