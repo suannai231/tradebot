@@ -21,6 +21,11 @@ open http://localhost:8001
 
 # (Optional) Generate demo data for dashboard
 python demo_dashboard.py
+
+# Choose your market data source:
+docker compose --profile default up -d       # Synthetic data (default)
+docker compose --profile alpaca up -d        # Real Alpaca data (requires ALPACA_KEY/SECRET)
+docker compose --profile polygon up -d       # Real Polygon data (requires POLYGON_API_KEY)
 ```
 
 The first build takes ~2-3 minutes. Subsequent starts are instant.
@@ -42,12 +47,21 @@ The system follows a microservices architecture with the following components:
 ### Core Services
 | Service      | Purpose                                    |
 |--------------|--------------------------------------------|
-| `market_data`| Real-time tick generation & data feeds    |
+| `market_data`| Synthetic tick generation (default)       |
 | `strategy`   | Trading signal generation                  |
 | `execution`  | Trade execution (paper trading)           |
 | `storage`    | Writes market data to TimescaleDB         |
 | `api`        | REST API for historical data (port 8000)  |
 | `dashboard`  | Web UI & real-time monitoring (port 8001) |
+
+### Market Data Services (Choose One)
+| Service                | Data Source | Requirements            | Usage                    |
+|------------------------|-------------|-------------------------|--------------------------|
+| `market_data`          | Synthetic   | None                    | `docker compose --profile default up -d`  |
+| `alpaca_market_data`   | Alpaca API  | ALPACA_KEY/SECRET       | `docker compose --profile alpaca up -d` |
+| `polygon_market_data`  | Polygon API | POLYGON_API_KEY         | `docker compose --profile polygon up -d` |
+
+**Note**: Each profile starts only one market data service, preventing conflicts.
 
 ### Communication
 - **Message Bus**: Redis Streams for real-time data flow
@@ -163,11 +177,17 @@ The web dashboard (http://localhost:8001) provides:
 - **Market summary** with top movers
 
 ### System Health Panel
-Services are color-coded based on status:
-- 🟢 **Healthy**: Recent heartbeat, no errors
-- 🟡 **Unhealthy**: Stale heartbeat (>5 minutes)
-- 🔴 **Error**: Active error count > 0
-- ⚫ **Unknown**: No heartbeat found
+The dashboard automatically detects and monitors all running services. Services are color-coded based on status:
+- 🟢 **Healthy**: Recent heartbeat (<30s), no errors
+- 🟡 **Degraded**: Stale heartbeat (30-60s)
+- 🔴 **Unhealthy**: Very stale heartbeat (1-5 minutes)
+- ⚫ **Dead**: No heartbeat (>5 minutes)
+- 🔶 **Error**: Active error count > 0
+
+The active market data service is clearly labeled:
+- **"market data"** = Synthetic data
+- **"alpaca market data"** = Real Alpaca data  
+- **"polygon market data"** = Real Polygon data
 
 ### Reset Error States
 ```bash

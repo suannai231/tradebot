@@ -350,6 +350,11 @@ async def get_market_summary(limit: int = 20) -> List[MarketSummary]:
             
             rows = await conn.fetch(query, limit, ten_minutes_ago)
             
+            # If no recent data, fall back to last hour
+            if not rows:
+                one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+                rows = await conn.fetch(query, limit, one_hour_ago)
+            
             return [
                 MarketSummary(
                     symbol=row["symbol"],
@@ -397,7 +402,18 @@ async def get_system_health() -> List[SystemHealth]:
         if not redis_client:
             return []
         
-        services = ["market_data", "strategy", "execution", "storage", "api"]
+        # Dynamically discover services by scanning Redis heartbeat keys
+        heartbeat_keys = await redis_client.keys("service:*:heartbeat")
+        services = []
+        for key in heartbeat_keys:
+            # Extract service name from key like "service:market_data:heartbeat"
+            key_str = key.decode() if isinstance(key, bytes) else key
+            service_name = key_str.split(':')[1]
+            services.append(service_name)
+        
+        # Sort services for consistent display order
+        services.sort()
+        
         health_status = []
         
         for service in services:

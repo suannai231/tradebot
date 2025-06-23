@@ -29,6 +29,21 @@ services:
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
     depends_on: [ redis ]
+    profiles: [ "synthetic", "default" ]  # Synthetic tick generation
+
+  # Real market data from Alpaca (requires API credentials)
+  alpaca_market_data:
+    build: .
+    command: python -m tradebot.market_data.alpaca_service
+    env_file: [ .env ]
+    environment:
+      - SERVICE_NAME=alpaca_market_data
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+    volumes:
+      - ./symbols_cache.json:/app/symbols_cache.json:ro
+    depends_on: [ redis ]
+    profiles: [ "alpaca" ]  # Only run when explicitly requested
 
   strategy:
     build: .
