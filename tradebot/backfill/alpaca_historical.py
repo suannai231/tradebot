@@ -42,7 +42,8 @@ async def fetch_historical_bars(session: aiohttp.ClientSession, symbol: str, sta
         "end": end,
         "timeframe": timeframe,
         "limit": 10000,
-        "adjustment": "raw",
+        # Use split-adjusted prices to handle stock splits
+        "adjustment": "split",
         "feed": "iex"  # Use IEX feed for free tier
     }
     
@@ -106,7 +107,7 @@ async def store_bars(pool: asyncpg.Pool, symbol: str, bars: List[dict]):
     logger.info("Stored %d OHLCV bars for %s", len(ticks), symbol)
 
 
-async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbol: str, days_back: int = 30):
+async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbol: str, days_back: int = 365):
     """Backfill historical data for one symbol."""
     # For free tier, try older data (15+ days old) which is usually available
     end_date = datetime.now(timezone.utc) - timedelta(days=15)  # End 15 days ago
@@ -175,18 +176,14 @@ async def initialize_symbols():
     """Initialize symbols based on configuration."""
     global SYMBOLS
     
-    if SYMBOL_MODE == "custom":
-        SYMBOLS = LEGACY_SYMBOLS
-        logger.info("Using custom symbols for backfill: %s", SYMBOLS)
-    else:
-        # Use symbol manager to get symbols
-        manager = SymbolManager()
-        all_symbols = await manager.initialize(SYMBOL_MODE)
-        
-        # Limit symbols for backfill to respect rate limits
-        SYMBOLS = all_symbols[:MAX_BACKFILL_SYMBOLS]
-        logger.info("Loaded %d symbols in '%s' mode for backfill (limited to %d)", 
-                   len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
+    # Use symbol manager for all modes including custom
+    manager = SymbolManager()
+    all_symbols = await manager.initialize(SYMBOL_MODE)
+    
+    # Limit symbols for backfill to respect rate limits
+    SYMBOLS = all_symbols[:MAX_BACKFILL_SYMBOLS]
+    logger.info("Loaded %d symbols in '%s' mode for backfill (limited to %d)", 
+               len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
 
 
 async def main():
@@ -222,7 +219,7 @@ async def main():
             async def process_symbol_with_limit(symbol):
                 async with semaphore:
                     try:
-                        await backfill_symbol(session, pool, symbol.strip(), days_back=90)
+                        await backfill_symbol(session, pool, symbol.strip(), days_back=365)
                         await asyncio.sleep(0.5)  # Rate limiting between requests
                     except Exception as e:
                         logger.error("Failed to backfill %s: %s", symbol, e)

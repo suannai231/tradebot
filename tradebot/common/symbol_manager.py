@@ -212,7 +212,15 @@ class SymbolManager:
         """Initialize symbol manager and return symbol list based on mode."""
         logger.info("Initializing symbol manager in '%s' mode", mode)
         
-        if mode == "all":
+        if mode == "custom":
+            # Use custom symbols from environment variable
+            custom_symbols = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
+            # Clean up symbols (remove whitespace)
+            cleaned_symbols = [symbol.strip() for symbol in custom_symbols if symbol.strip()]
+            logger.info("Using custom symbols: %s", cleaned_symbols)
+            return cleaned_symbols
+            
+        elif mode == "all":
             # Fetch all tradeable symbols
             all_assets = await self.fetch_all_symbols()
             self.all_symbols = all_assets

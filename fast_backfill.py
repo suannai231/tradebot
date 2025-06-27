@@ -107,7 +107,7 @@ async def store_bars_batch(pool: asyncpg.Pool, symbol_bars_list: List[tuple]):
 async def backfill_batch_fast(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbols: List[str]):
     """Process a batch of symbols with maximum concurrency."""
     end_date = datetime.now(timezone.utc) - timedelta(days=15)
-    start_date = end_date - timedelta(days=90)
+    start_date = end_date - timedelta(days=365)  # Changed from 90 to 365 days
     
     start_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_str = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
