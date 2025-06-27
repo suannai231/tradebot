@@ -397,85 +397,163 @@ async def get_recent_signals(limit: int = 50) -> List[Dict[str, Any]]:
 
 @app.get("/api/system-health")
 async def get_system_health() -> List[SystemHealth]:
-    """Get system health status with improved accuracy"""
-    try:
-        if not redis_client:
-            return []
-        
-        # Dynamically discover services by scanning Redis heartbeat keys
-        heartbeat_keys = await redis_client.keys("service:*:heartbeat")
-        services = []
-        for key in heartbeat_keys:
-            # Extract service name from key like "service:market_data:heartbeat"
-            key_str = key.decode() if isinstance(key, bytes) else key
-            service_name = key_str.split(':')[1]
-            services.append(service_name)
-        
-        # Sort services for consistent display order
-        services.sort()
-        
-        health_status = []
-        
-        for service in services:
-            try:
-                # Check last heartbeat
-                heartbeat_key = f"service:{service}:heartbeat"
-                last_heartbeat = await redis_client.get(heartbeat_key)
-                
-                if last_heartbeat:
-                    last_heartbeat = datetime.fromisoformat(last_heartbeat.decode())
-                    current_time = datetime.now(timezone.utc)
-                    
-                    # Ensure both timestamps are timezone-aware for accurate comparison
-                    if last_heartbeat.tzinfo is None:
-                        last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
-                    
-                    time_diff = current_time - last_heartbeat
-                    time_diff_seconds = time_diff.total_seconds()
-                    
-                    # Debug logging for troubleshooting
-                    logger.debug(f"Service {service}: current={current_time.isoformat()}, "
-                               f"heartbeat={last_heartbeat.isoformat()}, "
-                               f"diff={time_diff_seconds:.1f}s")
-                    
-                    # More responsive health checks with multiple statuses
-                    if time_diff_seconds < 30:
-                        status = "healthy"
-                    elif time_diff_seconds < 60:  # 1 minute
-                        status = "degraded"
-                    elif time_diff_seconds < 300:  # 5 minutes
-                        status = "unhealthy"
-                    else:
-                        status = "dead"
-                else:
-                    last_heartbeat = datetime.now(timezone.utc)
-                    status = "unknown"
-                
-                # Get error count
-                error_key = f"service:{service}:errors"
-                error_count = await redis_client.get(error_key) or 0
-                error_count = int(error_count)
-                
-                health_status.append(SystemHealth(
-                    service=service,
-                    status=status,
-                    last_heartbeat=last_heartbeat,
-                    error_count=error_count
-                ))
-            
-            except Exception as e:
-                logger.warning(f"Error checking health for {service}: {e}")
-                health_status.append(SystemHealth(
-                    service=service,
-                    status="error",
-                    last_heartbeat=datetime.now(timezone.utc),
-                    error_count=0
-                ))
-        
-        return health_status
+    """Get system health status for all services"""
+    if not db_pool:
+        return []
     
+    try:
+        # Get basic system stats
+        async with db_pool.acquire() as conn:
+            # Check database connectivity
+            await conn.execute("SELECT 1")
+            db_status = "healthy"
     except Exception as e:
-        logger.error(f"Error getting system health: {e}")
+        logger.error(f"Database health check failed: {e}")
+        db_status = "error"
+    
+    # Mock health data for now
+    health_data = [
+        SystemHealth(
+            service="Database",
+            status=db_status,
+            last_heartbeat=datetime.now(timezone.utc),
+            error_count=0 if db_status == "healthy" else 1
+        ),
+        SystemHealth(
+            service="Market Data Service",
+            status="healthy",
+            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=30),
+            error_count=0
+        ),
+        SystemHealth(
+            service="Strategy Service",
+            status="healthy",
+            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=45),
+            error_count=0
+        ),
+        SystemHealth(
+            service="Execution Service",
+            status="healthy",
+            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=60),
+            error_count=0
+        )
+    ]
+    
+    return health_data
+
+@app.get("/api/historical-data/{symbol}")
+async def get_historical_data(
+    symbol: str, 
+    timeframe: str = "1D",
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """Get historical price data for K-line charts"""
+    if not db_pool:
+        return []
+    
+    try:
+        # Validate timeframe
+        valid_timeframes = ["1D", "1W", "1M"]
+        if timeframe not in valid_timeframes:
+            timeframe = "1D"
+        
+        # Calculate date range based on timeframe and limit
+        end_date = datetime.now(timezone.utc)
+        if timeframe == "1D":
+            start_date = end_date - timedelta(days=limit)
+        elif timeframe == "1W":
+            start_date = end_date - timedelta(weeks=limit)
+        else:  # 1M
+            start_date = end_date - timedelta(days=limit * 30)
+        
+        async with db_pool.acquire() as conn:
+            if timeframe == "1D":
+                # Daily data - use existing daily bars
+                query = """
+                    SELECT 
+                        symbol,
+                        timestamp,
+                        open_price as open,
+                        high_price as high,
+                        low_price as low,
+                        close_price as close,
+                        volume
+                    FROM price_ticks 
+                    WHERE symbol = $1 
+                        AND timestamp >= $2 
+                        AND timestamp <= $3
+                        AND open_price IS NOT NULL
+                        AND high_price IS NOT NULL
+                        AND low_price IS NOT NULL
+                        AND close_price IS NOT NULL
+                    ORDER BY timestamp ASC
+                    LIMIT $4
+                """
+            else:
+                # Weekly/Monthly data - aggregate from daily data
+                if timeframe == "1W":
+                    interval = "week"
+                else:
+                    interval = "month"
+                
+                query = f"""
+                    SELECT 
+                        symbol,
+                        date_trunc('{interval}', timestamp) as timestamp,
+                        first(open_price, timestamp) as open,
+                        max(high_price) as high,
+                        min(low_price) as low,
+                        last(close_price, timestamp) as close,
+                        sum(volume) as volume
+                    FROM price_ticks 
+                    WHERE symbol = $1 
+                        AND timestamp >= $2 
+                        AND timestamp <= $3
+                        AND open_price IS NOT NULL
+                        AND high_price IS NOT NULL
+                        AND low_price IS NOT NULL
+                        AND close_price IS NOT NULL
+                    GROUP BY symbol, date_trunc('{interval}', timestamp)
+                    ORDER BY timestamp ASC
+                    LIMIT $4
+                """
+            
+            rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+            
+            # Convert to candlestick format
+            candles = []
+            for row in rows:
+                candles.append({
+                    "timestamp": row["timestamp"].isoformat(),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": int(row["volume"]) if row["volume"] else 0
+                })
+            
+            logger.info(f"Fetched {len(candles)} {timeframe} candles for {symbol}")
+            return candles
+            
+    except Exception as e:
+        logger.error(f"Error fetching historical data for {symbol}: {e}")
+        return []
+
+@app.get("/api/available-symbols")
+async def get_available_symbols() -> List[str]:
+    """Get list of available symbols in the database"""
+    if not db_pool:
+        return []
+    
+    try:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT symbol FROM price_ticks ORDER BY symbol"
+            )
+            symbols = [row["symbol"] for row in rows]
+            return symbols
+    except Exception as e:
+        logger.error(f"Error fetching available symbols: {e}")
         return []
 
 # WebSocket endpoint

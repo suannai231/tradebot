@@ -110,7 +110,7 @@ async def store_bars(pool: asyncpg.Pool, symbol: str, bars: List[dict]):
 async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbol: str, days_back: int = 365):
     """Backfill historical data for one symbol."""
     # For free tier, try older data (15+ days old) which is usually available
-    end_date = datetime.now(timezone.utc) - timedelta(days=15)  # End 15 days ago
+    end_date = datetime.now(timezone.utc) - timedelta(days=0)
     start_date = end_date - timedelta(days=days_back)
     
     start_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
