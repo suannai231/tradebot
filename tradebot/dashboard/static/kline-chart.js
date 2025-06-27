@@ -3,6 +3,21 @@
  * Provides candlestick chart functionality with multiple timeframes
  */
 
+// At the top of the file, after Chart.js is loaded
+console.log('ChartJS version:', Chart.version);
+console.log('ChartJS plugins:', Chart.registry ? Chart.registry.plugins.items : Chart.plugins ? Chart.plugins : 'unknown');
+
+// Register the zoom plugin explicitly if available
+if (window.ChartZoom) {
+    Chart.register(window.ChartZoom);
+    console.log('Registered ChartZoom from window.ChartZoom');
+} else if (window['chartjs-plugin-zoom']) {
+    Chart.register(window['chartjs-plugin-zoom']);
+    console.log('Registered ChartZoom from window["chartjs-plugin-zoom"]');
+} else {
+    console.warn('ChartZoom plugin not found on window');
+}
+
 class KLineChart {
     constructor() {
         this.chart = null;
@@ -217,6 +232,7 @@ class KLineChart {
                         pan: {
                             enabled: true,
                             mode: 'x',
+                            modifierKey: null,
                         },
                         zoom: {
                             wheel: {
@@ -244,7 +260,7 @@ class KLineChart {
         loadingDiv.style.display = 'block';
 
         try {
-            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=1000`);
+            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0`);
             const data = await response.json();
             console.log('K-line API data:', data); // DEBUG
 

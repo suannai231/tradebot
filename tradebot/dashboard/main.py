@@ -460,15 +460,14 @@ async def get_historical_data(
         # Calculate date range based on timeframe and limit
         end_date = datetime.now(timezone.utc)
         if timeframe == "1D":
-            start_date = end_date - timedelta(days=limit)
+            start_date = end_date - timedelta(days=limit if limit > 0 else 3650)
         elif timeframe == "1W":
-            start_date = end_date - timedelta(weeks=limit)
+            start_date = end_date - timedelta(weeks=limit if limit > 0 else 520)
         else:  # 1M
-            start_date = end_date - timedelta(days=limit * 30)
+            start_date = end_date - timedelta(days=(limit if limit > 0 else 120) * 30)
         
         async with db_pool.acquire() as conn:
             if timeframe == "1D":
-                # Daily data - use existing daily bars
                 query = """
                     SELECT 
                         symbol,
@@ -487,8 +486,12 @@ async def get_historical_data(
                         AND low_price IS NOT NULL
                         AND close_price IS NOT NULL
                     ORDER BY timestamp ASC
-                    LIMIT $4
                 """
+                if limit > 0:
+                    query += " LIMIT $4"
+                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+                else:
+                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
             else:
                 # Weekly/Monthly data - aggregate from daily data
                 if timeframe == "1W":
@@ -515,10 +518,12 @@ async def get_historical_data(
                         AND close_price IS NOT NULL
                     GROUP BY symbol, date_trunc('{interval}', timestamp)
                     ORDER BY timestamp ASC
-                    LIMIT $4
                 """
-            
-            rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+                if limit > 0:
+                    query += " LIMIT $4"
+                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+                else:
+                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
             
             # Convert to candlestick format
             candles = []
