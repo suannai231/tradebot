@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K-Line Chart Test</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <style>
+        #kline-chart-container {
+            position: relative;
+            height: 500px;
+            overflow: hidden;
+        }
+
+        #kline-chart {
+            cursor: grab;
+            transition: cursor 0.2s ease;
+        }
+
+        #kline-chart:active {
+            cursor: grabbing !important;
+        }
+
+        #kline-chart:hover {
+            cursor: grab;
+        }
+
+        .chart-interactive {
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+
+        .chart-interactive canvas {
+            cursor: grab;
+        }
+
+        .chart-interactive canvas:active {
+            cursor: grabbing !important;
+        }
+
+        .chart-pan-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1000;
+            display: none;
+        }
+
+        .chart-pan-indicator.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-chart-bar"></i> K-Line Chart Test - Mouse Drag Functionality</h5>
+                <p class="mb-0 text-muted">Try clicking and dragging horizontally on the chart to pan through the data</p>
+            </div>
+            <div class="card-body">
+                <div id="kline-chart-container" class="chart-interactive" style="height: 500px; position: relative;">
+                    <canvas id="kline-chart" height="500"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Register the zoom plugin
+        if (window.ChartZoom) {
+            Chart.register(window.ChartZoom);
+            console.log('Registered ChartZoom from window.ChartZoom');
+        } else if (window['chartjs-plugin-zoom']) {
+            Chart.register(window['chartjs-plugin-zoom']);
+            console.log('Registered ChartZoom from window["chartjs-plugin-zoom"]');
+        } else if (typeof ChartZoom !== 'undefined') {
+            Chart.register(ChartZoom);
+            console.log('Registered ChartZoom from global ChartZoom');
+        } else {
+            console.warn('ChartZoom plugin not found on window');
+        }
+
+        // Fallback pan method
+        Chart.prototype.fallbackPan = function(deltaX) {
+            const xScale = this.scales.x;
+            if (xScale && xScale.min !== undefined && xScale.max !== undefined) {
+                const range = xScale.max - xScale.min;
+                const panAmount = (deltaX / this.width) * range;
+                xScale.min += panAmount;
+                xScale.max += panAmount;
+                this.update('none');
+            }
+        };
+
+        // Generate sample data
+        function generateSampleData() {
+            const data = [];
+            const basePrice = 100;
+            const startDate = new Date('2024-01-01');
+            
+            for (let i = 0; i < 100; i++) {
+                const date = new Date(startDate);
+                date.setDate(date.getDate() + i);
+                
+                const open = basePrice + Math.random() * 20 - 10;
+                const close = open + Math.random() * 10 - 5;
+                const high = Math.max(open, close) + Math.random() * 5;
+                const low = Math.min(open, close) - Math.random() * 5;
+                const volume = Math.floor(Math.random() * 1000000) + 100000;
+                
+                data.push({
+                    x: date,
+                    y: close,
+                    o: open,
+                    h: high,
+                    l: low,
+                    c: close,
+                    v: volume
+                });
+            }
+            return data;
+        }
+
+        // Custom candlestick plugin
+        const candlestickPlugin = {
+            id: 'candlestick',
+            afterDraw: (chart) => {
+                const { ctx, data, scales } = chart;
+                const dataset = data.datasets[0];
+                
+                if (!dataset.data || dataset.data.length === 0) return;
+                
+                ctx.save();
+                
+                dataset.data.forEach((point, index) => {
+                    const x = scales.x.getPixelForValue(point.x);
+                    const openY = scales.y.getPixelForValue(point.o);
+                    const closeY = scales.y.getPixelForValue(point.c);
+                    const highY = scales.y.getPixelForValue(point.h);
+                    const lowY = scales.y.getPixelForValue(point.l);
+                    
+                    const isUp = point.c >= point.o;
+                    const color = isUp ? '#26a69a' : '#ef5350';
+                    
+                    // Draw wick (high-low line)
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, highY);
+                    ctx.lineTo(x, lowY);
+                    ctx.stroke();
+                    
+                    // Draw body
+                    const bodyWidth = Math.max(2, 8);
+                    const bodyHeight = Math.abs(closeY - openY);
+                    const bodyY = isUp ? closeY : openY;
+                    
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x - bodyWidth/2, bodyY, bodyWidth, bodyHeight);
+                    
+                    // Draw border
+                    ctx.strokeStyle = color;
+                    ctx.strokeRect(x - bodyWidth/2, bodyY, bodyWidth, bodyHeight);
+                });
+                
+                ctx.restore();
+            }
+        };
+
+        // Setup chart
+        const ctx = document.getElementById('kline-chart').getContext('2d');
+        const chartData = generateSampleData();
+        
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Price',
+                    data: chartData,
+                    borderColor: 'transparent',
+                    backgroundColor: 'transparent',
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    fill: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: {
+                                day: 'MMM dd',
+                                week: 'MMM dd',
+                                month: 'MMM yyyy'
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: 'Date'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Price ($)'
+                        },
+                        position: 'right'
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: function(context) {
+                                const dataPoint = context[0].raw;
+                                return new Date(dataPoint.x).toLocaleDateString();
+                            },
+                            label: function(context) {
+                                const dataPoint = context.raw;
+                                return [
+                                    `Open: $${dataPoint.o.toFixed(2)}`,
+                                    `High: $${dataPoint.h.toFixed(2)}`,
+                                    `Low: $${dataPoint.l.toFixed(2)}`,
+                                    `Close: $${dataPoint.c.toFixed(2)}`,
+                                    `Volume: ${dataPoint.v.toLocaleString()}`
+                                ];
+                            }
+                        }
+                    },
+                    zoom: {
+                        pan: {
+                            enabled: true,
+                            mode: 'x',
+                            modifierKey: null,
+                            threshold: 10,
+                            animation: {
+                                duration: 300,
+                                easing: 'easeOutCubic'
+                            }
+                        },
+                        zoom: {
+                            wheel: {
+                                enabled: true,
+                                speed: 0.1
+                            },
+                            pinch: {
+                                enabled: true
+                            },
+                            mode: 'x',
+                            drag: {
+                                enabled: true,
+                                backgroundColor: 'rgba(225,225,225,0.3)',
+                                borderColor: 'rgba(225,225,225)',
+                                borderWidth: 1,
+                                threshold: 10
+                            }
+                        }
+                    }
+                },
+                animation: {
+                    duration: 300
+                }
+            },
+            plugins: [candlestickPlugin]
+        });
+
+        // Setup mouse drag pan
+        const canvas = document.getElementById('kline-chart');
+        const container = document.getElementById('kline-chart-container');
+        let isDragging = false;
+        let lastX = 0;
+        
+        // Create pan indicator
+        let panIndicator = document.getElementById('kline-pan-indicator');
+        if (!panIndicator) {
+            panIndicator = document.createElement('div');
+            panIndicator.id = 'kline-pan-indicator';
+            panIndicator.className = 'chart-pan-indicator';
+            panIndicator.innerHTML = '<i class="fas fa-hand-paper"></i> Panning';
+            container.appendChild(panIndicator);
+        }
+        
+        // Mouse down event
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                isDragging = true;
+                lastX = e.clientX;
+                canvas.style.cursor = 'grabbing';
+                panIndicator.classList.add('active');
+                e.preventDefault();
+            }
+        });
+        
+        // Mouse move event
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging && chart) {
+                const deltaX = e.clientX - lastX;
+                const panAmount = deltaX * 1.5;
+                
+                if (chart.pan) {
+                    chart.pan({ x: panAmount }, undefined, 'default');
+                } else if (chart.fallbackPan) {
+                    chart.fallbackPan(panAmount);
+                }
+                
+                lastX = e.clientX;
+                e.preventDefault();
+            }
+        });
+        
+        // Mouse up event
+        canvas.addEventListener('mouseup', (e) => {
+            if (isDragging) {
+                isDragging = false;
+                canvas.style.cursor = 'grab';
+                panIndicator.classList.remove('active');
+                e.preventDefault();
+            }
+        });
+        
+        // Mouse leave event
+        canvas.addEventListener('mouseleave', (e) => {
+            if (isDragging) {
+                isDragging = false;
+                canvas.style.cursor = 'grab';
+                panIndicator.classList.remove('active');
+            }
+        });
+        
+        // Prevent context menu
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+        
+        // Set initial cursor style
+        canvas.style.cursor = 'grab';
+        
+        console.log('K-Line chart test loaded successfully!');
+        console.log('Try clicking and dragging horizontally on the chart to test the mouse drag functionality.');
+    </script>
+</body>
+</html> 

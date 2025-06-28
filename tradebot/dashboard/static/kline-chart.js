@@ -14,16 +14,35 @@ if (window.ChartZoom) {
 } else if (window['chartjs-plugin-zoom']) {
     Chart.register(window['chartjs-plugin-zoom']);
     console.log('Registered ChartZoom from window["chartjs-plugin-zoom"]');
+} else if (typeof ChartZoom !== 'undefined') {
+    Chart.register(ChartZoom);
+    console.log('Registered ChartZoom from global ChartZoom');
 } else {
     console.warn('ChartZoom plugin not found on window');
 }
 
+// Fallback pan method for when zoom plugin is not available
+Chart.prototype.fallbackPan = function(deltaX) {
+    const xScale = this.scales.x;
+    if (xScale && xScale.min !== undefined && xScale.max !== undefined) {
+        const range = xScale.max - xScale.min;
+        const panAmount = (deltaX / this.width) * range;
+        xScale.min += panAmount;
+        xScale.max += panAmount;
+        this.update('none');
+    }
+};
+
 class KLineChart {
     constructor() {
         this.chart = null;
+        this.volumeChart = null;
         this.currentSymbol = null;
         this.currentTimeframe = '1D';
         this.availableSymbols = [];
+        this.isDragging = false;
+        this.lastX = 0;
+        this.crosshair = { x: null, y: null, active: false };
         
         this.init();
     }
@@ -32,13 +51,11 @@ class KLineChart {
         this.setupEventListeners();
         this.loadAvailableSymbols();
         this.setupChart();
-        this.setupHorizontalWheelPan(); // Enable horizontal wheel panning
-        this.setupResetZoomButton(); // Add reset zoom button
+        this.setupMouseDragPan(); // Enable mouse drag panning
     }
 
     setupEventListeners() {
-        // Symbol selection
-        const symbolSelect = document.getElementById('kline-symbol-select');
+        // Symbol input and load button
         const symbolInput = document.getElementById('kline-symbol-input');
         const loadBtn = document.getElementById('kline-load-btn');
 
@@ -55,7 +72,7 @@ class KLineChart {
 
         // Load button
         loadBtn.addEventListener('click', () => {
-            const symbol = symbolInput.value.trim().toUpperCase() || symbolSelect.value;
+            const symbol = symbolInput.value.trim().toUpperCase();
             if (symbol) {
                 this.currentSymbol = symbol;
                 this.loadChartData();
@@ -68,14 +85,6 @@ class KLineChart {
                 loadBtn.click();
             }
         });
-
-        // Symbol select change
-        symbolSelect.addEventListener('change', (e) => {
-            if (e.target.value) {
-                this.currentSymbol = e.target.value;
-                this.loadChartData();
-            }
-        });
     }
 
     async loadAvailableSymbols() {
@@ -83,24 +92,7 @@ class KLineChart {
             const response = await fetch('/api/available-symbols');
             const symbols = await response.json();
             this.availableSymbols = symbols;
-            
-            // Populate select dropdown
-            const symbolSelect = document.getElementById('kline-symbol-select');
-            symbolSelect.innerHTML = '<option value="">Select Symbol</option>';
-            
-            symbols.forEach(symbol => {
-                const option = document.createElement('option');
-                option.value = symbol;
-                option.textContent = symbol;
-                symbolSelect.appendChild(option);
-            });
-
-            // Auto-select first symbol if available
-            if (symbols.length > 0) {
-                this.currentSymbol = symbols[0];
-                symbolSelect.value = this.currentSymbol;
-                this.loadChartData();
-            }
+            // No dropdown to update, so nothing else to do here
         } catch (error) {
             console.error('Error loading available symbols:', error);
         }
@@ -109,11 +101,17 @@ class KLineChart {
     setupChart() {
         const ctx = document.getElementById('kline-chart').getContext('2d');
         
+        // Check if zoom plugin is available
+        console.log('Setting up charts...');
+        console.log('ChartZoom available:', !!window.ChartZoom);
+        console.log('Chart.registry.plugins:', Chart.registry ? Object.keys(Chart.registry.plugins.items) : 'No registry');
+        
         // Custom candlestick plugin
         const candlestickPlugin = {
             id: 'candlestick',
             afterDraw: (chart) => {
                 const { ctx, data, scales } = chart;
+                const chartArea = chart.chartArea;
                 const dataset = data.datasets[0];
                 
                 if (!dataset.data || dataset.data.length === 0) return;
@@ -159,23 +157,262 @@ class KLineChart {
                 ctx.restore();
             }
         };
+
+        // Auto-adjust y-axis and percent plugin
+        const autoAdjustYAxisPlugin = {
+            id: 'autoAdjustYAxis',
+            afterUpdate: (chart) => {
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.y;
+                const data = chart.data.datasets[0].data;
+                if (!xScale || !yScale || !data || data.length === 0) return;
+                const minX = xScale.min;
+                const maxX = xScale.max;
+                const visible = data.filter(d => d.x >= minX && d.x <= maxX);
+                if (visible.length === 0) return;
+                const allPrices = visible.flatMap(d => [d.o, d.h, d.l, d.c]);
+                const minPrice = Math.min(...allPrices);
+                const maxPrice = Math.max(...allPrices);
+                const padding = (maxPrice - minPrice) * 0.05 || 1;
+                chart.options.scales.y.min = minPrice - padding;
+                chart.options.scales.y.max = maxPrice + padding;
+
+                // Recalculate percent change for visible candles
+                const base = visible[0].o;
+                data.forEach(d => {
+                    if (d.x >= minX && d.x <= maxX) {
+                        d.percent = ((d.c - base) / base) * 100;
+                    } else {
+                        d.percent = undefined;
+                    }
+                });
+                // Update the right y-axis (percent) scale
+                const visiblePercents = visible.map(d => d.percent).filter(p => p !== undefined);
+                if (visiblePercents.length > 0) {
+                    const minPercent = Math.min(...visiblePercents);
+                    const maxPercent = Math.max(...visiblePercents);
+                    chart.options.scales.yPercent.min = minPercent - 5;
+                    chart.options.scales.yPercent.max = maxPercent + 5;
+                }
+            }
+        };
+
+        // Custom crosshair plugin for main chart
+        const crosshairPlugin = {
+            id: 'crosshair',
+            afterDraw: (chart) => {
+                const ctx = chart.ctx;
+                const chartArea = chart.chartArea;
+                // Use the stored mouse position for the crosshair
+                const crosshair = this.crosshair;
+                if (!crosshair.active || crosshair.x === null || crosshair.y === null) return;
+                const x = crosshair.x;
+                const y = crosshair.y;
+                // Find the nearest data point for the date label
+                let d = {};
+                let minDist = Infinity;
+                let nearest = null;
+                const data = chart.data.datasets[0].data;
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.y;
+                if (data && data.length > 0 && xScale) {
+                    data.forEach(point => {
+                        const px = xScale.getPixelForValue(point.x);
+                        const dist = Math.abs(px - x);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            nearest = point;
+                        }
+                    });
+                    if (nearest) d = nearest;
+                }
+                // Calculate price at cursor y
+                let priceAtCursor = '-';
+                let percentAtCursor = '-';
+                if (yScale) {
+                    const price = yScale.getValueForPixel(y);
+                    if (typeof price === 'number' && isFinite(price)) {
+                        priceAtCursor = price.toFixed(2);
+                        // Find first visible candle for percent calculation
+                        let base = null;
+                        if (data && data.length > 0 && xScale) {
+                            const minX = xScale.min;
+                            const maxX = xScale.max;
+                            const visible = data.filter(d => d.x >= minX && d.x <= maxX);
+                            if (visible.length > 0) {
+                                base = visible[0].o;
+                            }
+                        }
+                        if (base) {
+                            percentAtCursor = (((price - base) / base) * 100).toFixed(2) + '%';
+                        }
+                    }
+                }
+                // Draw vertical and horizontal lines
+                ctx.save();
+                ctx.strokeStyle = 'rgba(180,180,180,0.7)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath();
+                ctx.moveTo(x, chartArea.top);
+                ctx.lineTo(x, chartArea.bottom);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, y);
+                ctx.lineTo(chartArea.right, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.restore();
+                // Draw price label (left)
+                ctx.font = 'bold 16px sans-serif';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = 'red';
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                const priceLabel = priceAtCursor;
+                const priceY = y;
+                const priceX = chartArea.left;
+                ctx.strokeText(priceLabel, priceX + 20, priceY);
+                ctx.fillText(priceLabel, priceX + 20, priceY);
+                // Draw percent label (right)
+                ctx.textAlign = 'right';
+                const percentLabel = percentAtCursor;
+                const percentX = chartArea.right;
+                ctx.strokeText(percentLabel, percentX - 20, priceY);
+                ctx.fillText(percentLabel, percentX - 20, priceY);
+            }
+        };
+
+        // Custom crosshair plugin for volume chart
+        const volumeCrosshairPlugin = {
+            id: 'volumeCrosshair',
+            afterDraw: (chart) => {
+                const ctx = chart.ctx;
+                const chartArea = chart.chartArea;
+                // Use the stored mouse position for the crosshair
+                const crosshair = this.crosshair;
+                if (!crosshair.active || crosshair.volumeX === null || crosshair.volumeY === null) return;
+                const x = crosshair.volumeX;
+                const y = crosshair.volumeY;
+                
+                // Find the nearest data point for volume value
+                let volumeValue = '-';
+                const data = chart.data.datasets[0].data;
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.yVolumeLeft;
+                
+                if (data && data.length > 0 && xScale && yScale) {
+                    let minDist = Infinity;
+                    let nearest = null;
+                    data.forEach(point => {
+                        const px = xScale.getPixelForValue(point.x);
+                        const dist = Math.abs(px - x);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            nearest = point;
+                        }
+                    });
+                    if (nearest && nearest.v) {
+                        volumeValue = nearest.v.toLocaleString();
+                    }
+                }
+                
+                // Draw vertical and horizontal lines
+                ctx.save();
+                ctx.strokeStyle = 'rgba(180,180,180,0.7)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath();
+                ctx.moveTo(x, chartArea.top);
+                ctx.lineTo(x, chartArea.bottom);
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.moveTo(chartArea.left, y);
+                ctx.lineTo(chartArea.right, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.restore();
+                
+                // Draw volume label (left)
+                ctx.font = 'bold 16px sans-serif';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'left';
+                ctx.fillStyle = 'blue';
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                const volumeLabel = volumeValue;
+                const volumeY = y;
+                const volumeX = chartArea.left;
+                ctx.strokeText(volumeLabel, volumeX + 20, volumeY);
+                ctx.fillText(volumeLabel, volumeX + 20, volumeY);
+                
+                // Draw date label (bottom)
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'top';
+                ctx.fillStyle = 'red';
+                let dateLabel = '-';
+                if (data && data.length > 0 && xScale) {
+                    let minDist = Infinity;
+                    let nearest = null;
+                    data.forEach(point => {
+                        const px = xScale.getPixelForValue(point.x);
+                        const dist = Math.abs(px - x);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            nearest = point;
+                        }
+                    });
+                    if (nearest && nearest.x) {
+                        dateLabel = nearest.x instanceof Date ? nearest.x.toLocaleDateString() : (nearest.x || '-');
+                    }
+                }
+                const dateY = chartArea.bottom;
+                ctx.strokeText(dateLabel, x, dateY + 20);
+                ctx.fillText(dateLabel, x, dateY + 20);
+            }
+        };
+
+        // Robust sync: volume chart always follows main chart
+        const syncVolumeChartX = (chart) => {
+            console.log('syncVolumeChartX called');
+            if (!this.volumeChart) {
+                console.warn('Volume chart not available for sync');
+                return;
+            }
+            const xScale = chart.scales.x;
+            console.log('Syncing volume chart x-axis:', xScale.min, 'to', xScale.max);
+            this.volumeChart.options.scales.x.min = xScale.min;
+            this.volumeChart.options.scales.x.max = xScale.max;
+            this.volumeChart.update('none');
+            console.log('Volume chart x-axis synced and updated');
+        };
         
+        console.log('Setting up main chart with zoom handlers');
+        // Main chart
         this.chart = new Chart(ctx, {
-            type: 'line', // Use line as base, we'll override drawing
+            type: 'line',
             data: {
-                datasets: [{
-                    label: 'Price',
-                    data: [],
-                    borderColor: 'transparent',
-                    backgroundColor: 'transparent',
-                    pointRadius: 0,
-                    pointHoverRadius: 0,
-                    fill: false
-                }]
+                datasets: [
+                    {
+                        label: 'Price',
+                        data: [],
+                        borderColor: 'transparent',
+                        backgroundColor: 'transparent',
+                        pointRadius: 0,
+                        pointHoverRadius: 0,
+                        fill: false,
+                        yAxisID: 'y',
+                        order: 1
+                    }
+                ]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                layout: {
+                    padding: 0
+                },
                 interaction: {
                     intersect: false,
                     mode: 'index'
@@ -185,6 +422,7 @@ class KLineChart {
                         type: 'time',
                         time: {
                             unit: 'day',
+                            minUnit: 'day',
                             displayFormats: {
                                 day: 'MMM dd',
                                 week: 'MMM dd',
@@ -192,18 +430,50 @@ class KLineChart {
                             }
                         },
                         title: {
-                            display: true,
+                            display: false,
                             text: 'Date'
-                        }
+                        },
+                        display: false,
+                        bounds: 'data',
+                        ticks: {
+                            source: 'data',
+                            maxTicksLimit: 10
+                        },
+                        offset: false
                     },
                     y: {
                         title: {
                             display: true,
                             text: 'Price ($)'
                         },
-                        position: 'right',
+                        position: 'left',
                         min: 0,
-                        max: 1
+                        max: 1,
+                        weight: 2,
+                        area: 'main',
+                        grid: {
+                            drawOnChartArea: true
+                        },
+                        ticks: {
+                            maxTicksLimit: 8,
+                            padding: 8
+                        }
+                    },
+                    yPercent: {
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: '% Change'
+                        },
+                        grid: {
+                            drawOnChartArea: false
+                        },
+                        ticks: {
+                            callback: function(value) {
+                                return value.toFixed(2) + '%';
+                            }
+                        },
+                        area: 'main'
                     }
                 },
                 plugins: {
@@ -218,11 +488,15 @@ class KLineChart {
                             },
                             label: function(context) {
                                 const dataPoint = context.raw;
+                                if (context.dataset.label === 'Volume') {
+                                    return `Volume: ${dataPoint.v ? dataPoint.v.toLocaleString() : context.parsed.y.toLocaleString()}`;
+                                }
                                 return [
                                     `Open: $${dataPoint.o.toFixed(2)}`,
                                     `High: $${dataPoint.h.toFixed(2)}`,
                                     `Low: $${dataPoint.l.toFixed(2)}`,
                                     `Close: $${dataPoint.c.toFixed(2)}`,
+                                    `Change: ${dataPoint.percent !== undefined ? dataPoint.percent.toFixed(2) + '%' : ''}`,
                                     `Volume: ${dataPoint.v.toLocaleString()}`
                                 ];
                             }
@@ -233,15 +507,23 @@ class KLineChart {
                             enabled: true,
                             mode: 'x',
                             modifierKey: null,
+                            threshold: 10,
+                            animation: {
+                                duration: 300,
+                                easing: 'easeOutCubic'
+                            }
                         },
                         zoom: {
                             wheel: {
-                                enabled: true,
+                                enabled: false
                             },
                             pinch: {
-                                enabled: true,
+                                enabled: true
                             },
                             mode: 'x',
+                            drag: {
+                                enabled: false
+                            }
                         }
                     }
                 },
@@ -249,58 +531,441 @@ class KLineChart {
                     duration: 300
                 }
             },
-            plugins: [candlestickPlugin]
+            plugins: [candlestickPlugin, autoAdjustYAxisPlugin, crosshairPlugin]
+        });
+        
+        console.log('Main chart created, zoom plugin enabled:', !!this.chart.options.plugins.zoom);
+
+        // Initialize the volume chart below
+        const vctx = document.getElementById('volume-chart').getContext('2d');
+        this.volumeChart = new Chart(vctx, {
+            type: 'bar',
+            data: {
+                datasets: [
+                    {
+                        label: 'Volume',
+                        data: [],
+                        backgroundColor: 'rgba(60, 120, 216, 0.3)',
+                        borderColor: 'rgba(60, 120, 216, 0.7)',
+                        yAxisID: 'yVolumeLeft',
+                        order: 1,
+                        barPercentage: 1.0,
+                        categoryPercentage: 1.0,
+                        borderWidth: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                layout: {
+                    padding: 0
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'month',
+                            minUnit: 'day',
+                            displayFormats: {
+                                day: 'MMM dd',
+                                week: 'MMM',
+                                month: 'MMM yyyy'
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: 'Date'
+                        },
+                        display: true,
+                        bounds: 'data',
+                        ticks: {
+                            source: 'auto',
+                            maxTicksLimit: 8,
+                            callback: function(value, index, ticks) {
+                                const date = new Date(value);
+                                const month = date.toLocaleDateString('en-US', { month: 'short' });
+                                const year = date.getFullYear();
+                                const currentYear = new Date().getFullYear();
+                                
+                                // Show year only for first occurrence or different year
+                                if (index === 0 || date.getMonth() === 0 || year !== currentYear) {
+                                    return `${month} ${year}`;
+                                }
+                                return month;
+                            }
+                        },
+                        offset: false
+                    },
+                    yVolumeLeft: {
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: 'Volume'
+                        },
+                        beginAtZero: true,
+                        display: true,
+                        min: 0,
+                        grid: {
+                            drawOnChartArea: true
+                        },
+                        ticks: {
+                            maxTicksLimit: 8,
+                            padding: 8,
+                            callback: function(value, index, ticks) {
+                                // Determine the unit based on the maximum value
+                                const maxValue = Math.max(...ticks.map(tick => tick.value));
+                                let unit = '';
+                                let divisor = 1;
+                                
+                                if (maxValue >= 1000000000) {
+                                    unit = 'B';
+                                    divisor = 1000000000;
+                                } else if (maxValue >= 1000000) {
+                                    unit = 'M';
+                                    divisor = 1000000;
+                                } else if (maxValue >= 1000) {
+                                    unit = 'K';
+                                    divisor = 1000;
+                                }
+                                
+                                // Show unit only on the first (bottom) tick
+                                if (index === 0 && unit) {
+                                    return unit;
+                                }
+                                
+                                // Show formatted number for other ticks
+                                const formattedValue = (value / divisor).toFixed(2);
+                                return formattedValue;
+                            }
+                        }
+                    },
+                    yVolumeRight: {
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: 'Volume'
+                        },
+                        beginAtZero: true,
+                        display: true,
+                        min: 0,
+                        grid: {
+                            drawOnChartArea: false
+                        },
+                        ticks: {
+                            maxTicksLimit: 8,
+                            padding: 8,
+                            callback: function(value, index, ticks) {
+                                // Determine the unit based on the maximum value
+                                const maxValue = Math.max(...ticks.map(tick => tick.value));
+                                let unit = '';
+                                let divisor = 1;
+                                
+                                if (maxValue >= 1000000000) {
+                                    unit = 'B';
+                                    divisor = 1000000000;
+                                } else if (maxValue >= 1000000) {
+                                    unit = 'M';
+                                    divisor = 1000000;
+                                } else if (maxValue >= 1000) {
+                                    unit = 'K';
+                                    divisor = 1000;
+                                }
+                                
+                                // Show unit only on the first (bottom) tick
+                                if (index === 0 && unit) {
+                                    return unit;
+                                }
+                                
+                                // Show formatted number for other ticks
+                                const formattedValue = (value / divisor).toFixed(2);
+                                return formattedValue;
+                            }
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: function(context) {
+                                const dataPoint = context[0].raw;
+                                return new Date(dataPoint.x).toLocaleDateString();
+                            },
+                            label: function(context) {
+                                const dataPoint = context.raw;
+                                return `Volume: ${dataPoint.v ? dataPoint.v.toLocaleString() : context.parsed.y.toLocaleString()}`;
+                            }
+                        }
+                    },
+                    zoom: {
+                        pan: {
+                            enabled: false
+                        },
+                        zoom: {
+                            wheel: {
+                                enabled: false
+                            },
+                            pinch: {
+                                enabled: false
+                            },
+                            mode: 'x',
+                            drag: {
+                                enabled: false
+                            }
+                        }
+                    }
+                },
+                animation: {
+                    duration: 300
+                }
+            },
+            plugins: [volumeCrosshairPlugin]
+        });
+
+        // Ensure both canvases have the same width on resize and load
+        const syncChartWidths = () => {
+            const mainCanvas = document.getElementById('kline-chart');
+            const volumeCanvas = document.getElementById('volume-chart');
+            const mainContainer = document.getElementById('kline-chart-container');
+            const volumeContainer = document.getElementById('volume-chart-container');
+            
+            if (mainCanvas && volumeCanvas && mainContainer && volumeContainer) {
+                // Force same width for containers
+                const containerWidth = mainContainer.clientWidth;
+                volumeContainer.style.width = containerWidth + 'px';
+                
+                // Force same width for canvases
+                mainCanvas.style.width = '100%';
+                volumeCanvas.style.width = '100%';
+                
+                // Resize charts
+                if (this.chart) this.chart.resize();
+                if (this.volumeChart) this.volumeChart.resize();
+            }
+        };
+        
+        window.addEventListener('resize', syncChartWidths);
+        
+        // Initial sync
+        setTimeout(syncChartWidths, 100);
+
+        // If no data, set x-axis to show the most recent year ending today
+        if (this.chart.data.datasets[0].data.length === 0) {
+            const today = new Date();
+            const minDate = new Date(today);
+            minDate.setFullYear(today.getFullYear() - 1);
+            this.chart.options.scales.x.min = minDate;
+            this.chart.options.scales.x.max = today;
+            this.chart.update();
+        }
+
+        // Add custom wheel handler with manual sync
+        const canvas = ctx.canvas;
+        canvas.addEventListener('wheel', (event) => {
+            if (!this.chart) return;
+            if (event.deltaX !== 0) {
+                // Side wheel: pan
+                const panAmount = event.deltaX * 5;
+                this.chart.pan({ x: panAmount }, undefined, 'default');
+                console.log('Manual pan triggered, syncing volume chart');
+                syncVolumeChartX(this.chart);
+                event.preventDefault();
+            } else if (event.deltaY !== 0) {
+                // Main wheel: zoom
+                if (this.chart.zoom) {
+                    this.chart.zoom({ x: event.deltaY < 0 ? 1.1 : 0.9 });
+                    console.log('Manual zoom triggered, syncing volume chart');
+                    syncVolumeChartX(this.chart);
+                    event.preventDefault();
+                }
+            }
+        }, { passive: false });
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            // Calculate corresponding x position on volume chart
+            const volumeCanvas = document.getElementById('volume-chart');
+            let volumeX = x;
+            let volumeY = null;
+            
+            if (volumeCanvas && this.volumeChart) {
+                const volumeRect = volumeCanvas.getBoundingClientRect();
+                const volumeChartArea = this.volumeChart.chartArea;
+                if (volumeChartArea) {
+                    volumeY = volumeChartArea.top + (volumeChartArea.bottom - volumeChartArea.top) / 2; // Middle of volume chart
+                }
+            }
+            
+            this.crosshair = { x, y, volumeX, volumeY, active: true };
+            if (this.chart) this.chart.draw();
+            if (this.volumeChart) this.volumeChart.draw();
+        });
+        canvas.addEventListener('mouseleave', () => {
+            this.crosshair = { x: null, y: null, volumeX: null, volumeY: null, active: false };
+            if (this.chart) this.chart.draw();
+            if (this.volumeChart) this.volumeChart.draw();
+        });
+
+        // Add mouse events to volume chart
+        const volumeCanvas = document.getElementById('volume-chart');
+        volumeCanvas.addEventListener('mousemove', (e) => {
+            const rect = volumeCanvas.getBoundingClientRect();
+            const volumeX = e.clientX - rect.left;
+            const volumeY = e.clientY - rect.top;
+            
+            // Calculate corresponding x position on main chart
+            const mainCanvas = document.getElementById('kline-chart');
+            let x = volumeX;
+            let y = null;
+            
+            if (mainCanvas && this.chart) {
+                const mainRect = mainCanvas.getBoundingClientRect();
+                const mainChartArea = this.chart.chartArea;
+                if (mainChartArea) {
+                    y = mainChartArea.top + (mainChartArea.bottom - mainChartArea.top) / 2; // Middle of main chart
+                }
+            }
+            
+            this.crosshair = { x, y, volumeX, volumeY, active: true };
+            if (this.chart) this.chart.draw();
+            if (this.volumeChart) this.volumeChart.draw();
+        });
+        volumeCanvas.addEventListener('mouseleave', () => {
+            this.crosshair = { x: null, y: null, volumeX: null, volumeY: null, active: false };
+            if (this.chart) this.chart.draw();
+            if (this.volumeChart) this.volumeChart.draw();
+        });
+    }
+
+    // Filter out non-trading dates (weekends and holidays)
+    filterTradingDays(data) {
+        return data.filter(item => {
+            const date = new Date(item.x);
+            const dayOfWeek = date.getDay(); // 0 = Sunday, 6 = Saturday
+            
+            // Remove weekends (Saturday = 6, Sunday = 0)
+            if (dayOfWeek === 0 || dayOfWeek === 6) {
+                return false;
+            }
+            
+            // Optional: Remove common US market holidays
+            const month = date.getMonth() + 1; // 1-based month
+            const day = date.getDate();
+            
+            // New Year's Day (January 1)
+            if (month === 1 && day === 1) return false;
+            
+            // Independence Day (July 4)
+            if (month === 7 && day === 4) return false;
+            
+            // Christmas Day (December 25)
+            if (month === 12 && day === 25) return false;
+            
+            // Add more holidays as needed:
+            // Martin Luther King Jr. Day (3rd Monday in January)
+            // Presidents Day (3rd Monday in February)
+            // Good Friday (varies)
+            // Memorial Day (last Monday in May)
+            // Labor Day (1st Monday in September)
+            // Thanksgiving (4th Thursday in November)
+            
+            return true; // Keep trading days
         });
     }
 
     async loadChartData() {
         if (!this.currentSymbol) return;
-
         const loadingDiv = document.getElementById('kline-loading');
         loadingDiv.style.display = 'block';
-
         try {
             const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0`);
             const data = await response.json();
             console.log('K-line API data:', data); // DEBUG
-
             if (data.length === 0) {
                 this.showNoDataMessage();
                 return;
             }
-
-            // Convert to candlestick format
+            // Sort chartData by date
             const chartData = data.map(candle => ({
-                x: new Date(candle.timestamp), // Date object for time scale
-                y: candle.close,               // dummy y so Chart.js uses the point
+                x: new Date(candle.timestamp),
+                y: candle.close,
                 o: candle.open,
                 h: candle.high,
                 l: candle.low,
                 c: candle.close,
-                v: candle.volume
-            }));
-            console.log('K-line chartData:', chartData); // DEBUG
-
-            // Dynamically set y-axis min/max
-            const allPrices = chartData.flatMap(d => [d.o, d.h, d.l, d.c]);
-            const minPrice = Math.min(...allPrices);
-            const maxPrice = Math.max(...allPrices);
-            const padding = (maxPrice - minPrice) * 0.05 || 1;
-            this.chart.options.scales.y.min = minPrice - padding;
-            this.chart.options.scales.y.max = maxPrice + padding;
-
-            // Update chart
-            this.chart.data.datasets[0].data = chartData;
+                v: candle.volume // Ensure this is present and correct
+            })).sort((a, b) => a.x - b.x);
+            
+            // Filter out non-trading dates
+            const filteredChartData = this.filterTradingDays(chartData);
+            console.log('Filtered out', chartData.length - filteredChartData.length, 'non-trading days');
+            
+            // Calculate percent change from first visible candle
+            let base = filteredChartData[0].o;
+            filteredChartData.forEach(d => {
+                d.percent = ((d.c - base) / base) * 100;
+            });
+            // Volume data for bar chart
+            const volumeData = filteredChartData.map(d => ({ x: d.x, y: d.v, v: d.v }));
+            console.log('Volume data for chart:', volumeData); // DEBUG
+            // Set chart data
+            this.chart.data.datasets[0].data = filteredChartData;
             this.chart.data.datasets[0].label = `${this.currentSymbol} (${this.currentTimeframe})`;
-            // Force Chart.js to recalculate x scale
-            this.chart.options.scales.x.min = undefined;
-            this.chart.options.scales.x.max = undefined;
+            // Set x-axis to show the most recent 1 year of dates
+            if (filteredChartData.length > 0) {
+                const maxDate = filteredChartData[filteredChartData.length - 1].x;
+                const minDate = new Date(maxDate);
+                minDate.setFullYear(minDate.getFullYear() - 1);
+                this.chart.options.scales.x.min = minDate;
+                this.chart.options.scales.x.max = maxDate;
+                this.volumeChart.options.scales.x.min = minDate;
+                this.volumeChart.options.scales.x.max = maxDate;
+                console.log('Loaded', filteredChartData.length, 'trading days');
+            } else {
+                this.chart.options.scales.x.min = undefined;
+                this.chart.options.scales.x.max = undefined;
+                this.volumeChart.options.scales.x.min = undefined;
+                this.volumeChart.options.scales.x.max = undefined;
+            }
             this.chart.update();
+            // Set volume chart data
+            this.volumeChart.data.datasets[0].data = volumeData;
+            this.volumeChart.update();
+            setTimeout(() => {
+                if (this.chart && this.chart.update) this.chart.update();
+                if (this.volumeChart && this.volumeChart.update) this.volumeChart.update();
+            }, 0);
+            setTimeout(() => {
+                const chart = this.chart;
+                if (!chart) return;
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.y;
+                const data = chart.data.datasets[0].data;
+                if (!xScale || !yScale || !data || data.length === 0) return;
+                const minX = xScale.min;
+                const maxX = xScale.max;
+                const visible = data.filter(d => d.x >= minX && d.x <= maxX);
+                if (visible.length === 0) return;
+                const allPrices = visible.flatMap(d => [d.o, d.h, d.l, d.c]);
+                const minPrice = Math.min(...allPrices);
+                const maxPrice = Math.max(...allPrices);
+                const padding = (maxPrice - minPrice) * 0.05 || 1;
+                chart.options.scales.y.min = minPrice - padding;
+                chart.options.scales.y.max = maxPrice + padding;
+                chart.update();
+                // Sync volume chart x-axis
+                if (this.volumeChart) {
+                    this.volumeChart.options.scales.x.min = xScale.min;
+                    this.volumeChart.options.scales.x.max = xScale.max;
+                    this.volumeChart.update('none');
+                }
+            }, 50);
             console.log('K-line chart updated:', this.chart.data.datasets[0].data); // DEBUG
-
-            // Update chart title
-            this.updateChartTitle();
-
         } catch (error) {
             console.error('Error loading chart data:', error);
             this.showErrorMessage('Failed to load chart data');
@@ -310,7 +975,7 @@ class KLineChart {
     }
 
     updateChartTitle() {
-        const cardHeader = document.querySelector('.card-header h5');
+        const cardHeader = document.querySelector('#kline-card-header h5');
         if (cardHeader) {
             cardHeader.innerHTML = `<i class="fas fa-chart-bar"></i> K-Line Chart - ${this.currentSymbol} (${this.currentTimeframe})`;
         }
@@ -369,36 +1034,128 @@ class KLineChart {
         }
     }
 
-    setupResetZoomButton() {
-        // Add a reset zoom button if not already present
-        let btn = document.getElementById('kline-reset-zoom-btn');
-        if (!btn) {
-            btn = document.createElement('button');
-            btn.id = 'kline-reset-zoom-btn';
-            btn.className = 'btn btn-outline-secondary btn-sm ms-2';
-            btn.innerHTML = '<i class="fas fa-search-minus"></i> Reset Zoom';
-            btn.style.display = 'inline-block';
-            const header = document.querySelector('.card-header.d-flex');
-            if (header) header.appendChild(btn);
-        }
-        btn.onclick = () => {
-            if (this.chart) {
-                this.chart.resetZoom && this.chart.resetZoom();
-            }
-        };
-    }
-
-    setupHorizontalWheelPan() {
-        // Pan the chart horizontally when the horizontal wheel is used
+    setupMouseDragPan() {
+        const canvas = document.getElementById('kline-chart');
         const container = document.getElementById('kline-chart-container');
-        container.addEventListener('wheel', (event) => {
-            if (event.deltaX !== 0 && this.chart) {
-                // Pan by a factor proportional to deltaX
-                const panAmount = event.deltaX * 5; // Adjust sensitivity as needed
-                this.chart.pan({ x: panAmount }, undefined, 'default');
-                event.preventDefault();
+        // Mouse down event
+        canvas.addEventListener('mousedown', (e) => {
+            // Only start dragging on left mouse button
+            if (e.button === 0) {
+                this.isDragging = true;
+                this.lastX = e.clientX;
+                canvas.style.cursor = 'grabbing'; // hand when dragging
+                e.preventDefault();
             }
-        }, { passive: false });
+        });
+        // Mouse move event
+        canvas.addEventListener('mousemove', (e) => {
+            if (this.isDragging && this.chart) {
+                const deltaX = e.clientX - this.lastX;
+                const panAmount = deltaX * 1.5; // Adjust sensitivity
+                // Use Chart.js zoom plugin pan method if available
+                if (this.chart.pan) {
+                    this.chart.pan({ x: panAmount }, undefined, 'default');
+                    console.log('Manual drag pan triggered, syncing volume chart');
+                    // Sync volume chart after panning
+                    if (this.volumeChart) {
+                        const xScale = this.chart.scales.x;
+                        this.volumeChart.options.scales.x.min = xScale.min;
+                        this.volumeChart.options.scales.x.max = xScale.max;
+                        this.volumeChart.update('none');
+                        console.log('Volume chart synced after drag pan');
+                    }
+                } else if (this.chart.fallbackPan) {
+                    // Use fallback pan method
+                    this.chart.fallbackPan(panAmount);
+                    console.log('Manual fallback pan triggered, syncing volume chart');
+                    // Sync volume chart after fallback panning
+                    if (this.volumeChart) {
+                        const xScale = this.chart.scales.x;
+                        this.volumeChart.options.scales.x.min = xScale.min;
+                        this.volumeChart.options.scales.x.max = xScale.max;
+                        this.volumeChart.update('none');
+                        console.log('Volume chart synced after fallback pan');
+                    }
+                }
+                this.lastX = e.clientX;
+                e.preventDefault();
+            }
+        });
+        // Mouse up event
+        canvas.addEventListener('mouseup', (e) => {
+            if (this.isDragging) {
+                this.isDragging = false;
+                canvas.style.cursor = 'default'; // arrow when not dragging
+                e.preventDefault();
+            }
+        });
+        // Mouse leave event
+        canvas.addEventListener('mouseleave', (e) => {
+            if (this.isDragging) {
+                this.isDragging = false;
+                canvas.style.cursor = 'default'; // arrow when not dragging
+            }
+        });
+        // Prevent context menu on right click
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+        // Set initial cursor style
+        canvas.style.cursor = 'default';
+        // Add touch support for mobile devices
+        let touchStartX = 0;
+        let touchStartY = 0;
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                const touch = e.touches[0];
+                touchStartX = touch.clientX;
+                touchStartY = touch.clientY;
+                this.isDragging = true;
+                e.preventDefault();
+            }
+        });
+        canvas.addEventListener('touchmove', (e) => {
+            if (this.isDragging && e.touches.length === 1 && this.chart) {
+                const touch = e.touches[0];
+                const deltaX = touch.clientX - touchStartX;
+                const deltaY = touch.clientY - touchStartY;
+                // Only pan if horizontal movement is greater than vertical
+                if (Math.abs(deltaX) > Math.abs(deltaY)) {
+                    const panAmount = deltaX * 2;
+                    if (this.chart.pan) {
+                        this.chart.pan({ x: panAmount }, undefined, 'default');
+                        console.log('Manual touch pan triggered, syncing volume chart');
+                        // Sync volume chart after touch panning
+                        if (this.volumeChart) {
+                            const xScale = this.chart.scales.x;
+                            this.volumeChart.options.scales.x.min = xScale.min;
+                            this.volumeChart.options.scales.x.max = xScale.max;
+                            this.volumeChart.update('none');
+                            console.log('Volume chart synced after touch pan');
+                        }
+                    } else if (this.chart.fallbackPan) {
+                        // Use fallback pan method
+                        this.chart.fallbackPan(panAmount);
+                        console.log('Manual touch fallback pan triggered, syncing volume chart');
+                        // Sync volume chart after touch fallback panning
+                        if (this.volumeChart) {
+                            const xScale = this.chart.scales.x;
+                            this.volumeChart.options.scales.x.min = xScale.min;
+                            this.volumeChart.options.scales.x.max = xScale.max;
+                            this.volumeChart.update('none');
+                            console.log('Volume chart synced after touch fallback pan');
+                        }
+                    }
+                    touchStartX = touch.clientX;
+                    e.preventDefault();
+                }
+            }
+        });
+        canvas.addEventListener('touchend', (e) => {
+            if (this.isDragging) {
+                this.isDragging = false;
+            }
+        });
     }
 }
 

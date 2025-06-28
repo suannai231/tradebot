@@ -219,7 +219,7 @@ async def main():
             async def process_symbol_with_limit(symbol):
                 async with semaphore:
                     try:
-                        await backfill_symbol(session, pool, symbol.strip(), days_back=365)
+                        await backfill_symbol(session, pool, symbol.strip(), days_back=365*5)
                         await asyncio.sleep(0.5)  # Rate limiting between requests
                     except Exception as e:
                         logger.error("Failed to backfill %s: %s", symbol, e)

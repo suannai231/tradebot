@@ -298,17 +298,84 @@ body {
 /* Debug red borders added 1750652228 */
 
 /* K-Line Chart Styles */
-#kline-chart-container {
+#kline-chart-container, #volume-chart-container {
     position: relative;
-    background: #f8f9fa;
-    border-radius: 4px;
-    padding: 10px;
+    overflow: hidden;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+#kline-chart-container {
+    height: 500px;
+}
+
+#volume-chart-container {
+    height: 120px;
+    margin-top: 10px;
+}
+
+#kline-chart, #volume-chart {
+    cursor: grab;
+    transition: cursor 0.2s ease;
+    width: 100% !important;
+    height: 100% !important;
+    display: block;
+}
+
+#kline-chart:active, #volume-chart:active {
+    cursor: grabbing !important;
+}
+
+#kline-chart:hover, #volume-chart:hover {
+    cursor: grab;
 }
 
 #kline-loading {
+    z-index: 10;
     background: rgba(255, 255, 255, 0.9);
     border-radius: 8px;
     padding: 20px;
+}
+
+/* Chart interaction styles */
+.chart-interactive {
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.chart-interactive canvas {
+    cursor: grab;
+}
+
+.chart-interactive canvas:active {
+    cursor: grabbing !important;
+}
+
+/* Zoom selection area */
+.chartjs-zoom-selection {
+    background-color: rgba(0, 123, 255, 0.1) !important;
+    border: 1px solid rgba(0, 123, 255, 0.3) !important;
+}
+
+/* Pan indicator */
+.chart-pan-indicator {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 1000;
+    display: none;
+}
+
+.chart-pan-indicator.active {
+    display: block;
 }
 
 .btn-group .btn-check:checked + .btn {

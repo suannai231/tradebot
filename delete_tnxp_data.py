@@ -69,7 +69,7 @@ async def rerun_tnxp_backfill():
         # Create HTTP session
         async with aiohttp.ClientSession() as session:
             # Use the existing backfill function with correct parameters
-            await backfill_symbol(session, pool, "TNXP", days_back=365)
+            await backfill_symbol(session, pool, "TNXP", days_back=365*5)
         
         await pool.close()
         print("✅ TNXP backfill completed successfully")

@@ -82,9 +82,8 @@ async def lifespan(app: FastAPI):
     if db_pool:
         await db_pool.close()
     if redis_client:
-        await redis_client.close()
-    if message_bus:
-        await message_bus.close()
+        await redis_client.aclose()
+    # MessageBus doesn't have a close method, so we don't need to close it
 
 
 # FastAPI app
