@@ -271,6 +271,9 @@ async def get_ohlcv_summary(
         "period_low": float(row["period_low"]) if row["period_low"] else None
     }
 
+# Register the backtest router at the end to avoid import cycles
+from tradebot.api.backtest_service import router as backtest_router
+app.include_router(backtest_router)
 
 if __name__ == "__main__":
     uvicorn.run(

@@ -545,20 +545,47 @@ async def get_historical_data(
 
 @app.get("/api/available-symbols")
 async def get_available_symbols() -> List[str]:
-    """Get list of available symbols in the database"""
+    """Get list of available symbols"""
     if not db_pool:
         return []
     
     try:
         async with db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT DISTINCT symbol FROM price_ticks ORDER BY symbol"
-            )
-            symbols = [row["symbol"] for row in rows]
-            return symbols
+            query = "SELECT DISTINCT symbol FROM price_ticks ORDER BY symbol"
+            rows = await conn.fetch(query)
+            return [row["symbol"] for row in rows]
     except Exception as e:
-        logger.error(f"Error fetching available symbols: {e}")
+        logger.error(f"Error getting available symbols: {e}")
         return []
+
+@app.get("/api/backtest")
+async def proxy_backtest(
+    symbol: str,
+    strategy: str = "mean_reversion",
+    start: str = None,
+    end: str = None
+):
+    """Proxy backtest requests to the API service"""
+    import httpx
+    
+    try:
+        # Forward the request to the API service
+        api_url = "http://api:8000/api/backtest"  # Use Docker service name
+        params = {
+            "symbol": symbol,
+            "strategy": strategy,
+            "start": start,
+            "end": end
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(api_url, params=params)
+            response.raise_for_status()
+            return response.json()
+            
+    except Exception as e:
+        logger.error(f"Error proxying backtest request: {e}")
+        return {"error": str(e)}
 
 # WebSocket endpoint
 @app.websocket("/ws")

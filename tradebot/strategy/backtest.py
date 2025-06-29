@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+import math, copy
 
 from tradebot.common.models import PriceTick, Signal, Side
 from tradebot.strategy.advanced_strategies import create_strategy, StrategyConfig
@@ -65,7 +66,7 @@ class BacktestResult:
     trades: List[Trade]
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             'strategy_name': self.strategy_name,
             'symbol': self.symbol,
             'start_date': self.start_date.isoformat(),
@@ -82,6 +83,11 @@ class BacktestResult:
             'avg_loss': self.avg_loss,
             'profit_factor': self.profit_factor
         }
+        # replace inf / nan with None so JSON is valid
+        for k, v in d.items():
+            if isinstance(v, float) and (math.isinf(v) or math.isnan(v)):
+                d[k] = None
+        return d
 
 
 class BacktestEngine:

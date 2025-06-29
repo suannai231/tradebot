@@ -193,6 +193,35 @@
             </div>
         </div>
 
+        <!-- Backtest Section -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-play"></i> Back-test</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-sm-2"><input id="bt-symbol" type="text" class="form-control form-control-sm" placeholder="Symbol" /></div>
+                            <div class="col-sm-3">
+                                <select id="bt-strategy" class="form-select form-select-sm">
+                                    <option value="mean_reversion">Mean Reversion</option>
+                                    <option value="simple_ma">Simple MA</option>
+                                    <option value="advanced">Advanced</option>
+                                </select>
+                            </div>
+                            <div class="col-sm-2"><input id="bt-start" type="date" class="form-control form-control-sm" /></div>
+                            <div class="col-sm-2"><input id="bt-end" type="date" class="form-control form-control-sm" /></div>
+                            <div class="col-sm-1">
+                                <button id="bt-run" class="btn btn-primary btn-sm w-100" onclick="runBacktest()"><i class="fas fa-play"></i></button>
+                            </div>
+                        </div>
+                        <pre id="bt-result" class="small mt-3"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Activity Log -->
         <div class="row mt-4">
             <div class="col-12">
@@ -312,6 +341,41 @@
 
         // kick off connection after page load
         connectWebSocket();
+
+        // Backtest function as fallback - make it globally accessible
+        window.runBacktest = async function() {
+            console.log('runBacktest() called from onclick');
+            const sym = document.getElementById('bt-symbol').value.trim().toUpperCase();
+            const strat = document.getElementById('bt-strategy').value;
+            const startRaw = document.getElementById('bt-start').value;
+            const endRaw = document.getElementById('bt-end').value;
+            console.log('Backtest inputs:', { sym, strat, startRaw, endRaw });
+            
+            // convert to ISO yyyy-mm-dd regardless of browser locale
+            const start = new Date(startRaw).toISOString().slice(0,10);
+            const end   = new Date(endRaw).toISOString().slice(0,10);
+            const out = document.getElementById('bt-result');
+            if (!sym || !start || !end) {
+                out.textContent = 'Please enter symbol, start and end dates.';
+                return;
+            }
+            out.textContent = 'Running back-test…';
+            try {
+                console.log('Making backtest API call...');
+                const resp = await fetch(`/api/backtest?symbol=${sym}&strategy=${strat}&start=${start}&end=${end}`);
+                console.log('Backtest response:', resp);
+                if (!resp.ok) {
+                    const txt = await resp.text();
+                    throw new Error(txt);
+                }
+                const data = await resp.json();
+                console.log('Backtest data:', data);
+                out.textContent = `${sym} ${strat}\nReturn: ${data.total_return_pct.toFixed(2)}%\nTrades: ${data.total_trades}\nWin-rate: ${data.win_rate.toFixed(1)}%\nSharpe: ${data.sharpe_ratio.toFixed(2)}`;
+            } catch (e) {
+                console.error('Backtest error:', e);
+                out.textContent = 'Error: ' + (e.message || e);
+            }
+        };
     </script>
 </body>
 </html> 

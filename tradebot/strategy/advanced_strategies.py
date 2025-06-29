@@ -40,10 +40,16 @@ class StrategyConfig:
 
 
 class AdvancedBuyStrategy:
-    """Advanced strategy combining multiple technical indicators for buy signals."""
-    
-    def __init__(self, config: StrategyConfig = None):
+    """Advanced strategy combining multiple technical indicators for buy signals.
+    Accepts any StrategyConfig field as a keyword argument for easy tuning.
+    """
+    def __init__(self, config: StrategyConfig = None, **kwargs):
+        # start with default or provided config
         self.config = config or StrategyConfig()
+        # override with supplied keyword args that match StrategyConfig attributes
+        for k, v in kwargs.items():
+            if hasattr(self.config, k):
+                setattr(self.config, k, v)
         
         # Price data storage
         self.prices: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
@@ -482,6 +488,49 @@ class LowVolumeStrategy:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Simple Moving Average crossover strategy for quick back-tests
+# ---------------------------------------------------------------------------
+
+
+class SimpleMovingAverageStrategy:
+    """Very simple SMA crossover strategy used by back-tester sample."""
+
+    def __init__(self, short_window: int = 10, long_window: int = 30):
+        if short_window >= long_window:
+            raise ValueError("short_window must be < long_window")
+        self.short_window = short_window
+        self.long_window = long_window
+        self.prices: Dict[str, deque] = defaultdict(lambda: deque(maxlen=long_window + 5))
+        self.last_side: Dict[str, Side] = defaultdict(lambda: None)
+        self.last_signals: Dict[str, datetime] = defaultdict(lambda: datetime.min.replace(tzinfo=timezone.utc))
+
+    def on_tick(self, tick: PriceTick) -> Optional[Signal]:
+        sym = tick.symbol
+        dq = self.prices[sym]
+        dq.append(tick.price)
+        if len(dq) < self.long_window:
+            return None
+
+        # compute SMAs
+        prices = list(dq)
+        short_ma = sum(prices[-self.short_window:]) / self.short_window
+        long_ma = sum(prices[-self.long_window:]) / self.long_window
+
+        # crossover logic
+        if short_ma > long_ma and self.last_side[sym] != Side.buy:
+            self.last_side[sym] = Side.buy
+            self.last_signals[sym] = tick.timestamp
+            return Signal(symbol=sym, side=Side.buy, price=tick.price, timestamp=tick.timestamp, confidence=1.0)
+
+        if short_ma < long_ma and self.last_side[sym] == Side.buy:
+            self.last_side[sym] = Side.sell
+            self.last_signals[sym] = tick.timestamp
+            return Signal(symbol=sym, side=Side.sell, price=tick.price, timestamp=tick.timestamp, confidence=1.0)
+
+        return None
+
+
 # Factory function to create strategies
 def create_strategy(strategy_type: str, **kwargs):
     """Factory function to create strategy instances."""
@@ -491,6 +540,8 @@ def create_strategy(strategy_type: str, **kwargs):
         return MeanReversionStrategy(**kwargs)
     elif strategy_type == "low_volume":
         return LowVolumeStrategy(**kwargs)
+    elif strategy_type == "simple_ma":
+        return SimpleMovingAverageStrategy(**kwargs)
     elif strategy_type == "momentum_breakout":
         return MomentumBreakoutStrategy(**kwargs)
     elif strategy_type == "volatility_mean_reversion":
