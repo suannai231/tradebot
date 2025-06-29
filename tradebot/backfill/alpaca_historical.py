@@ -48,11 +48,12 @@ async def fetch_historical_bars(session: aiohttp.ClientSession, symbol: str, sta
     }
     
     async with session.get(url, headers=headers, params=params) as response:
+        # First attempt (possibly with IEX feed)
         if response.status != 200:
             error_text = await response.text()
             logger.error("Failed to fetch %s: %s %s", symbol, response.status, error_text)
             
-            # If IEX fails, try without feed parameter (will use default)
+            # If IEX fails, try without feed parameter (will use SIP/auto)
             if response.status == 403 and "feed" in str(error_text):
                 logger.info("Retrying %s without feed parameter", symbol)
                 params.pop("feed", None)
@@ -66,9 +67,23 @@ async def fetch_historical_bars(session: aiohttp.ClientSession, symbol: str, sta
                     return bars
             return []
         
+        # status 200
         data = await response.json()
         bars = data.get("bars", [])
-        logger.info("Fetched %d bars for %s", len(bars), symbol)
+
+        # If zero bars returned with IEX feed, try default feed once more
+        if not bars and params.get("feed") == "iex":
+            logger.info("No bars from IEX for %s, retrying without feed param", symbol)
+            params.pop("feed", None)
+            async with session.get(url, headers=headers, params=params) as retry_response:
+                if retry_response.status != 200:
+                    logger.error("Retry failed for %s: %s %s", symbol, retry_response.status, await retry_response.text())
+                    return []
+                data = await retry_response.json()
+                bars = data.get("bars", [])
+                logger.info("Fetched %d bars for %s (retry no-feed)", len(bars), symbol)
+        else:
+            logger.info("Fetched %d bars for %s", len(bars), symbol)
         return bars
 
 
@@ -107,23 +122,34 @@ async def store_bars(pool: asyncpg.Pool, symbol: str, bars: List[dict]):
     logger.info("Stored %d OHLCV bars for %s", len(ticks), symbol)
 
 
-async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbol: str, days_back: int = 365):
-    """Backfill historical data for one symbol."""
-    # For free tier, try older data (15+ days old) which is usually available
-    end_date = datetime.now(timezone.utc) - timedelta(days=0)
-    start_date = end_date - timedelta(days=days_back)
-    
+async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, symbol: str, days_back: int = 365*5):
+    """Backfill only the bars that are not yet in price_ticks."""
+
+    async with pool.acquire() as conn:
+        last_ts = await conn.fetchval("SELECT max(timestamp) FROM price_ticks WHERE symbol=$1", symbol)
+
+    if last_ts:
+        # start the day after the last stored bar
+        start_date = last_ts + timedelta(days=1)
+        logger.info("Incremental backfill %s starting %s (existing data to %s)", symbol, start_date.date(), last_ts.date())
+    else:
+        # Full history (fallback)
+        start_date = datetime.now(timezone.utc) - timedelta(days=days_back)
+        logger.info("Full backfill %s last %d days", symbol, days_back)
+
+    end_date = datetime.now(timezone.utc)
+
+    # If nothing is missing
+    if start_date.date() > end_date.date():
+        logger.info("%s is already up-to-date – skipping", symbol)
+        return
+
     start_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_str = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    logger.info("Backfilling %s from %s to %s (using older data for free tier)", symbol, start_str, end_str)
-    
-    # Fetch daily bars
+    end_str   = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Fetch daily bars only for the missing range
     bars = await fetch_historical_bars(session, symbol, start_str, end_str, "1Day")
     await store_bars(pool, symbol, bars)
-    
-    # Skip hourly data for free tier to avoid rate limits
-    logger.info("Skipping hourly data for %s (free tier limitation)", symbol)
 
 
 async def init_database(pool: asyncpg.Pool):

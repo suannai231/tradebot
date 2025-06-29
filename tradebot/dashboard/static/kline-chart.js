@@ -119,8 +119,20 @@ class KLineChart {
                 ctx.save();
                 // Do NOT clearRect here!
                 
+                const xScale = chart.scales.x;
+                // Determine body width from first two visible candles
+                let baseWidth = 8;
+                const vis = dataset.data.filter(p => p && p.x >= xScale.min && p.x <= xScale.max);
+                if (vis.length > 1) {
+                    const px0 = xScale.getPixelForValue(vis[0].x);
+                    const px1 = xScale.getPixelForValue(vis[1].x);
+                    baseWidth = Math.abs(px1 - px0) * 0.7; // 70% of gap
+                }
+                baseWidth = Math.max(1, Math.min(40, baseWidth));
+                
                 dataset.data.forEach((point, index) => {
-                    const x = scales.x.getPixelForValue(point.x);
+                    if (!point || point.x === undefined) return; // safeguard
+                    const x = xScale.getPixelForValue(point.x);
                     const openY = scales.y.getPixelForValue(point.o);
                     const closeY = scales.y.getPixelForValue(point.c);
                     const highY = scales.y.getPixelForValue(point.h);
@@ -141,8 +153,7 @@ class KLineChart {
                     ctx.lineTo(x, lowY);
                     ctx.stroke();
                     
-                    // Draw body
-                    const bodyWidth = Math.max(2, 8);
+                    const bodyWidth = baseWidth;
                     const bodyHeight = Math.abs(closeY - openY);
                     const bodyY = isUp ? closeY : openY;
                     
@@ -363,8 +374,10 @@ class KLineChart {
                             nearest = point;
                         }
                     });
-                    if (nearest && nearest.x) {
-                        dateLabel = nearest.x instanceof Date ? nearest.x.toLocaleDateString() : (nearest.x || '-');
+                    if (nearest) {
+                        // Use original date if available, otherwise use compressed date
+                        const displayDate = nearest.originalDate || nearest.x;
+                        dateLabel = displayDate instanceof Date ? displayDate.toLocaleDateString() : (displayDate || '-');
                     }
                 }
                 const dateY = chartArea.bottom;
@@ -373,7 +386,37 @@ class KLineChart {
             }
         };
 
-        // Robust sync: volume chart always follows main chart
+        // Keep right volume y-axis synced with the left one so both show identical scale
+        const mirrorVolumeYScale = {
+            id: 'mirrorVolumeY',
+            afterUpdate(chart) {
+                const left = chart.scales.yVolumeLeft;
+                const right = chart.scales.yVolumeRight;
+                if (left && right) {
+                    right.options.min = left.min;
+                    right.options.max = left.max;
+                    // ensure no grid lines drawn on mirrored axis
+                    right.options.grid = { drawOnChartArea: false };
+                }
+            }
+        };
+
+        // Dynamically set volume bar thickness to 80% of candle width so bars align with candles precisely
+        const autoVolumeBarWidth = {
+            id: 'autoVolBarWidth',
+            afterUpdate(chart) {
+                const ds = chart.data.datasets[0];
+                if (!ds || !ds.data || ds.data.length < 2) return;
+                const xScale = chart.scales.x;
+                const first = ds.data[0].x;
+                const second = ds.data[1].x;
+                if (!first || !second) return;
+                const w = Math.abs(xScale.getPixelForValue(second) - xScale.getPixelForValue(first));
+                ds.barThickness = Math.max(1, Math.floor(w * 0.8));
+            }
+        };
+
+        // Robust sync: volume chart always follows main chart (time scale)
         const syncVolumeChartX = (chart) => {
             console.log('syncVolumeChartX called');
             if (!this.volumeChart) {
@@ -381,7 +424,6 @@ class KLineChart {
                 return;
             }
             const xScale = chart.scales.x;
-            console.log('Syncing volume chart x-axis:', xScale.min, 'to', xScale.max);
             this.volumeChart.options.scales.x.min = xScale.min;
             this.volumeChart.options.scales.x.max = xScale.max;
             this.volumeChart.update('none');
@@ -420,6 +462,12 @@ class KLineChart {
                 scales: {
                     x: {
                         type: 'time',
+                        bounds: 'data',
+                        offset: false,
+                        grid: {
+                            drawOnChartArea: false,
+                            drawTicks: false
+                        },
                         time: {
                             unit: 'day',
                             minUnit: 'day',
@@ -429,17 +477,19 @@ class KLineChart {
                                 month: 'MMM yyyy'
                             }
                         },
+                        display: false,
                         title: {
                             display: false,
                             text: 'Date'
                         },
-                        display: false,
-                        bounds: 'data',
                         ticks: {
                             source: 'data',
-                            maxTicksLimit: 10
-                        },
-                        offset: false
+                            maxTicksLimit: 10,
+                            callback: function(value) {
+                                const d = new Date(value);
+                                return isFinite(d) ? d.toLocaleDateString('en-US', { month: 'short' }) : '';
+                            }
+                        }
                     },
                     y: {
                         title: {
@@ -551,6 +601,7 @@ class KLineChart {
                         order: 1,
                         barPercentage: 1.0,
                         categoryPercentage: 1.0,
+                        barThickness: 'flex',
                         borderWidth: 0
                     }
                 ]
@@ -564,38 +615,37 @@ class KLineChart {
                 scales: {
                     x: {
                         type: 'time',
+                        bounds: 'data',
+                        offset: false,
+                        grid: {
+                            drawOnChartArea: false,
+                            drawTicks: false
+                        },
                         time: {
-                            unit: 'month',
+                            unit: 'day',
                             minUnit: 'day',
                             displayFormats: {
                                 day: 'MMM dd',
-                                week: 'MMM',
+                                week: 'MMM dd',
                                 month: 'MMM yyyy'
                             }
                         },
+                        display: true,
                         title: {
                             display: true,
                             text: 'Date'
                         },
-                        display: true,
-                        bounds: 'data',
                         ticks: {
-                            source: 'auto',
-                            maxTicksLimit: 8,
-                            callback: function(value, index, ticks) {
-                                const date = new Date(value);
-                                const month = date.toLocaleDateString('en-US', { month: 'short' });
-                                const year = date.getFullYear();
-                                const currentYear = new Date().getFullYear();
-                                
-                                // Show year only for first occurrence or different year
-                                if (index === 0 || date.getMonth() === 0 || year !== currentYear) {
-                                    return `${month} ${year}`;
-                                }
-                                return month;
+                            source: 'data',
+                            maxTicksLimit: 10,
+                            callback: function(value, index) {
+                                const d = new Date(value);
+                                if (!isFinite(d)) return '';
+                                const m = d.toLocaleDateString('en-US', { month: 'short' });
+                                const y = d.getFullYear();
+                                return index === 0 || d.getMonth() === 0 ? `${m} ${y}` : m;
                             }
-                        },
-                        offset: false
+                        }
                     },
                     yVolumeLeft: {
                         position: 'left',
@@ -722,7 +772,7 @@ class KLineChart {
                     duration: 300
                 }
             },
-            plugins: [volumeCrosshairPlugin]
+            plugins: [volumeCrosshairPlugin, mirrorVolumeYScale, autoVolumeBarWidth]
         });
 
         // Ensure both canvases have the same width on resize and load
@@ -733,13 +783,13 @@ class KLineChart {
             const volumeContainer = document.getElementById('volume-chart-container');
             
             if (mainCanvas && volumeCanvas && mainContainer && volumeContainer) {
-                // Force same width for containers
-                const containerWidth = mainContainer.clientWidth;
-                volumeContainer.style.width = containerWidth + 'px';
-                
-                // Force same width for canvases
-                mainCanvas.style.width = '100%';
+                // Force identical bitmap width for canvases to keep scales in perfect sync
+                const pixelWidth = mainCanvas.width; // actual render width in pixels
+                mainCanvas.style.width  = '100%';
                 volumeCanvas.style.width = '100%';
+                if (volumeCanvas.width !== pixelWidth) {
+                    volumeCanvas.width = pixelWidth;
+                }
                 
                 // Resize charts
                 if (this.chart) this.chart.resize();
@@ -878,10 +928,39 @@ class KLineChart {
         });
     }
 
+    // Compress dates so that consecutive trading days are exactly 1 calendar day apart.
+    // Keeps a mapping to the real date for display purposes.
+    compressDateGaps(data) {
+        if (!data || data.length === 0) return [];
+
+        // Sort chronological
+        const sorted = [...data].sort((a, b) => new Date(a.x) - new Date(b.x));
+
+        const firstReal = new Date(sorted[0].x);
+
+        return sorted.map((d, idx) => {
+            const compressedDate = new Date(firstReal);
+            compressedDate.setDate(firstReal.getDate() + idx); // strictly +1 day each point
+            return {
+                ...d,
+                originalDate: d.x,
+                x: compressedDate
+            };
+        });
+    }
+
     async loadChartData() {
         if (!this.currentSymbol) return;
         const loadingDiv = document.getElementById('kline-loading');
         loadingDiv.style.display = 'block';
+
+        // Helper: clear any previous overlay messages
+        const clearOverlays = () => {
+            const container = document.getElementById('kline-chart-container');
+            if (!container) return;
+            [...container.querySelectorAll('.kline-overlay-msg')].forEach(el => el.remove());
+        };
+        clearOverlays();
         try {
             const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0`);
             const data = await response.json();
@@ -905,37 +984,51 @@ class KLineChart {
             const filteredChartData = this.filterTradingDays(chartData);
             console.log('Filtered out', chartData.length - filteredChartData.length, 'non-trading days');
             
+            // Compress date gaps
+            const compressedData = this.compressDateGaps(filteredChartData);
+            console.log('Compressed', filteredChartData.length, 'trading days (weekends removed)');
+            
             // Calculate percent change from first visible candle
-            let base = filteredChartData[0].o;
-            filteredChartData.forEach(d => {
+            let base = compressedData[0].o;
+            compressedData.forEach(d => {
                 d.percent = ((d.c - base) / base) * 100;
             });
             // Volume data for bar chart
-            const volumeData = filteredChartData.map(d => ({ x: d.x, y: d.v, v: d.v }));
+            const volumeData = compressedData.map(d => ({
+                x: d.x,
+                y: d.v,
+                v: d.v,
+                originalDate: d.originalDate,
+                up: d.c >= d.o // true if bullish candle
+            }));
+
+            // Build colour arrays for volume bars
+            const volBg = volumeData.map(d => d.up ? 'rgba(0, 200, 90, 0.4)' : 'rgba(220, 53, 69, 0.4)');
+            const volBorder = volumeData.map(d => d.up ? 'rgba(0, 200, 90, 0.9)' : 'rgba(220, 53, 69, 0.9)');
+
             console.log('Volume data for chart:', volumeData); // DEBUG
             // Set chart data
-            this.chart.data.datasets[0].data = filteredChartData;
+            this.chart.data.datasets[0].data = compressedData;
             this.chart.data.datasets[0].label = `${this.currentSymbol} (${this.currentTimeframe})`;
-            // Set x-axis to show the most recent 1 year of dates
-            if (filteredChartData.length > 0) {
-                const maxDate = filteredChartData[filteredChartData.length - 1].x;
+            // Adjust visible window to last year of data
+            if (compressedData.length > 0) {
+                const maxDate = compressedData[compressedData.length - 1].x;
                 const minDate = new Date(maxDate);
                 minDate.setFullYear(minDate.getFullYear() - 1);
                 this.chart.options.scales.x.min = minDate;
                 this.chart.options.scales.x.max = maxDate;
                 this.volumeChart.options.scales.x.min = minDate;
                 this.volumeChart.options.scales.x.max = maxDate;
-                console.log('Loaded', filteredChartData.length, 'trading days');
-            } else {
-                this.chart.options.scales.x.min = undefined;
-                this.chart.options.scales.x.max = undefined;
-                this.volumeChart.options.scales.x.min = undefined;
-                this.volumeChart.options.scales.x.max = undefined;
             }
             this.chart.update();
             // Set volume chart data
             this.volumeChart.data.datasets[0].data = volumeData;
+            this.volumeChart.data.datasets[0].backgroundColor = volBg;
+            this.volumeChart.data.datasets[0].borderColor = volBorder;
             this.volumeChart.update();
+
+            // Remove any leftover overlay now that we have data
+            clearOverlays();
             setTimeout(() => {
                 if (this.chart && this.chart.update) this.chart.update();
                 if (this.volumeChart && this.volumeChart.update) this.volumeChart.update();
@@ -990,7 +1083,7 @@ class KLineChart {
         // Show message in chart area
         const container = document.getElementById('kline-chart-container');
         const message = document.createElement('div');
-        message.className = 'position-absolute top-50 start-50 translate-middle text-muted';
+        message.className = 'position-absolute top-50 start-50 translate-middle text-muted kline-overlay-msg';
         message.innerHTML = '<i class="fas fa-info-circle"></i> No data available for this symbol/timeframe';
         container.appendChild(message);
     }
@@ -1004,7 +1097,7 @@ class KLineChart {
         // Show error message in chart area
         const container = document.getElementById('kline-chart-container');
         const errorDiv = document.createElement('div');
-        errorDiv.className = 'position-absolute top-50 start-50 translate-middle text-danger';
+        errorDiv.className = 'position-absolute top-50 start-50 translate-middle text-danger kline-overlay-msg';
         errorDiv.innerHTML = `<i class="fas fa-exclamation-triangle"></i> ${message}`;
         container.appendChild(errorDiv);
     }
