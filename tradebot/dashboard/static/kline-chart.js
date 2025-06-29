@@ -375,9 +375,7 @@ class KLineChart {
                         }
                     });
                     if (nearest) {
-                        // Use original date if available, otherwise use compressed date
-                        const displayDate = nearest.originalDate || nearest.x;
-                        dateLabel = displayDate instanceof Date ? displayDate.toLocaleDateString() : (displayDate || '-');
+                        dateLabel = nearest.dateStr || KLineChart.formatDateUTC(new Date(nearest.x));
                     }
                 }
                 const dateY = chartArea.bottom;
@@ -401,18 +399,32 @@ class KLineChart {
             }
         };
 
-        // Dynamically set volume bar thickness to 80% of candle width so bars align with candles precisely
+        // Dynamically set volume bar thickness to match candle width for perfect alignment
         const autoVolumeBarWidth = {
             id: 'autoVolBarWidth',
             afterUpdate(chart) {
                 const ds = chart.data.datasets[0];
                 if (!ds || !ds.data || ds.data.length < 2) return;
                 const xScale = chart.scales.x;
-                const first = ds.data[0].x;
-                const second = ds.data[1].x;
+                
+                // Find first two visible data points to calculate spacing
+                const minX = xScale.min;
+                const maxX = xScale.max;
+                const visible = ds.data.filter(d => d && d.x >= minX && d.x <= maxX);
+                
+                if (visible.length < 2) return;
+                
+                const first = visible[0].x;
+                const second = visible[1].x;
                 if (!first || !second) return;
-                const w = Math.abs(xScale.getPixelForValue(second) - xScale.getPixelForValue(first));
-                ds.barThickness = Math.max(1, Math.floor(w * 0.8));
+                
+                const pixelSpacing = Math.abs(xScale.getPixelForValue(second) - xScale.getPixelForValue(first));
+                // Set bar thickness to 70% of spacing to match candlestick width
+                const barWidth = Math.max(1, Math.floor(pixelSpacing * 0.7));
+                
+                // Apply the calculated width
+                ds.barThickness = barWidth;
+                console.log('Volume bar width set to:', barWidth, 'pixels (spacing:', pixelSpacing, ')');
             }
         };
 
@@ -426,8 +438,12 @@ class KLineChart {
             const xScale = chart.scales.x;
             this.volumeChart.options.scales.x.min = xScale.min;
             this.volumeChart.options.scales.x.max = xScale.max;
-            this.volumeChart.update('none');
-            console.log('Volume chart x-axis synced and updated');
+            
+            // Force the volume chart to recalculate bar widths after sync
+            setTimeout(() => {
+                this.volumeChart.update('none');
+                console.log('Volume chart x-axis synced and updated');
+            }, 0);
         };
         
         console.log('Setting up main chart with zoom handlers');
@@ -534,7 +550,7 @@ class KLineChart {
                         callbacks: {
                             title: function(context) {
                                 const dataPoint = context[0].raw;
-                                return new Date(dataPoint.x).toLocaleDateString();
+                                return dataPoint.dateStr || KLineChart.formatDateUTC(new Date(dataPoint.x));
                             },
                             label: function(context) {
                                 const dataPoint = context.raw;
@@ -599,10 +615,11 @@ class KLineChart {
                         borderColor: 'rgba(60, 120, 216, 0.7)',
                         yAxisID: 'yVolumeLeft',
                         order: 1,
-                        barPercentage: 1.0,
-                        categoryPercentage: 1.0,
+                        barPercentage: 0.8,
+                        categoryPercentage: 0.9,
                         barThickness: 'flex',
-                        borderWidth: 0
+                        borderWidth: 0,
+                        maxBarThickness: 40
                     }
                 ]
             },
@@ -742,7 +759,7 @@ class KLineChart {
                         callbacks: {
                             title: function(context) {
                                 const dataPoint = context[0].raw;
-                                return new Date(dataPoint.x).toLocaleDateString();
+                                return dataPoint.dateStr || KLineChart.formatDateUTC(new Date(dataPoint.x));
                             },
                             label: function(context) {
                                 const dataPoint = context.raw;
@@ -928,27 +945,6 @@ class KLineChart {
         });
     }
 
-    // Compress dates so that consecutive trading days are exactly 1 calendar day apart.
-    // Keeps a mapping to the real date for display purposes.
-    compressDateGaps(data) {
-        if (!data || data.length === 0) return [];
-
-        // Sort chronological
-        const sorted = [...data].sort((a, b) => new Date(a.x) - new Date(b.x));
-
-        const firstReal = new Date(sorted[0].x);
-
-        return sorted.map((d, idx) => {
-            const compressedDate = new Date(firstReal);
-            compressedDate.setDate(firstReal.getDate() + idx); // strictly +1 day each point
-            return {
-                ...d,
-                originalDate: d.x,
-                x: compressedDate
-            };
-        });
-    }
-
     async loadChartData() {
         if (!this.currentSymbol) return;
         const loadingDiv = document.getElementById('kline-loading');
@@ -962,44 +958,56 @@ class KLineChart {
         };
         clearOverlays();
         try {
-            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0`);
+            // Fetch split-adjusted data for smooth chart display
+            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0&adjust_for_splits=true`);
             const data = await response.json();
             console.log('K-line API data:', data); // DEBUG
             if (data.length === 0) {
                 this.showNoDataMessage();
                 return;
             }
-            // Sort chartData by date
-            const chartData = data.map(candle => ({
-                x: new Date(candle.timestamp),
-                y: candle.close,
-                o: candle.open,
-                h: candle.high,
-                l: candle.low,
-                c: candle.close,
-                v: candle.volume // Ensure this is present and correct
-            })).sort((a, b) => a.x - b.x);
+            
+            // Also fetch split events for display annotations (optional enhancement)
+            const splitsResponse = await fetch(`/api/splits/${this.currentSymbol}`);
+            const splits = await splitsResponse.json();
+            console.log('Split events:', splits);
+            
+            // Sort chartData by date using real trading dates (no compression)
+            const chartData = data.map(candle => {
+                const dateObj = new Date(candle.timestamp); // parse ISO / epoch equally
+                const epoch = dateObj.getTime();            // numeric ms since 1970-01-01
+                const dateStr = dateObj.toISOString().slice(0,10); // YYYY-MM-DD
+                return {
+                    x: epoch,         // Chart.js time scale accepts epoch ms
+                    dateStr,          // cached human-readable date
+                    y: candle.close,
+                    o: candle.open,
+                    h: candle.high,
+                    l: candle.low,
+                    c: candle.close,
+                    v: candle.volume
+                };
+            }).sort((a, b) => a.x - b.x);
             
             // Filter out non-trading dates
             const filteredChartData = this.filterTradingDays(chartData);
             console.log('Filtered out', chartData.length - filteredChartData.length, 'non-trading days');
-            
-            // Compress date gaps
-            const compressedData = this.compressDateGaps(filteredChartData);
-            console.log('Compressed', filteredChartData.length, 'trading days (weekends removed)');
-            
+
+            // Use real trading dates without compression
+            const displayData = filteredChartData;
+
             // Calculate percent change from first visible candle
-            let base = compressedData[0].o;
-            compressedData.forEach(d => {
+            let base = displayData[0].o;
+            displayData.forEach(d => {
                 d.percent = ((d.c - base) / base) * 100;
             });
             // Volume data for bar chart
-            const volumeData = compressedData.map(d => ({
+            const volumeData = displayData.map(d => ({
                 x: d.x,
                 y: d.v,
                 v: d.v,
-                originalDate: d.originalDate,
-                up: d.c >= d.o // true if bullish candle
+                up: d.c >= d.o,
+                dateStr: d.dateStr
             }));
 
             // Build colour arrays for volume bars
@@ -1008,11 +1016,11 @@ class KLineChart {
 
             console.log('Volume data for chart:', volumeData); // DEBUG
             // Set chart data
-            this.chart.data.datasets[0].data = compressedData;
+            this.chart.data.datasets[0].data = displayData;
             this.chart.data.datasets[0].label = `${this.currentSymbol} (${this.currentTimeframe})`;
             // Adjust visible window to last year of data
-            if (compressedData.length > 0) {
-                const maxDate = compressedData[compressedData.length - 1].x;
+            if (displayData.length > 0) {
+                const maxDate = displayData[displayData.length - 1].x;
                 const minDate = new Date(maxDate);
                 minDate.setFullYear(minDate.getFullYear() - 1);
                 this.chart.options.scales.x.min = minDate;
@@ -1032,6 +1040,17 @@ class KLineChart {
             setTimeout(() => {
                 if (this.chart && this.chart.update) this.chart.update();
                 if (this.volumeChart && this.volumeChart.update) this.volumeChart.update();
+                
+                // Ensure alignment after both charts are updated
+                setTimeout(() => {
+                    if (this.chart && this.volumeChart) {
+                        const xScale = this.chart.scales.x;
+                        this.volumeChart.options.scales.x.min = xScale.min;
+                        this.volumeChart.options.scales.x.max = xScale.max;
+                        this.volumeChart.update('none');
+                        console.log('Final chart alignment sync completed');
+                    }
+                }, 100);
             }, 0);
             setTimeout(() => {
                 const chart = this.chart;
@@ -1058,7 +1077,7 @@ class KLineChart {
                     this.volumeChart.update('none');
                 }
             }, 50);
-            console.log('K-line chart updated:', this.chart.data.datasets[0].data); // DEBUG
+            console.log('K-line chart updated with split-adjusted data for smooth display');
         } catch (error) {
             console.error('Error loading chart data:', error);
             this.showErrorMessage('Failed to load chart data');
@@ -1249,6 +1268,14 @@ class KLineChart {
                 this.isDragging = false;
             }
         });
+    }
+
+    // Helper to format a Date as YYYY-MM-DD using its UTC components to avoid timezone shifts
+    static formatDateUTC(date) {
+        const y = date.getUTCFullYear();
+        const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(date.getUTCDate()).padStart(2, '0');
+        return `${m}/${d}/${y}`; // keeps same style as default locale but without TZ influence
     }
 }
 

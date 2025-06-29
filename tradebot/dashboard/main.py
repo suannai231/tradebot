@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 import redis.asyncio as redis
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
@@ -440,108 +440,179 @@ async def get_system_health() -> List[SystemHealth]:
     
     return health_data
 
+@app.get("/api/splits/{symbol}")
+async def get_stock_splits(symbol: str) -> List[Dict[str, Any]]:
+    """Get stock split events for a symbol."""
+    if not db_pool:
+        raise HTTPException(500, "Database not available")
+    
+    async with db_pool.acquire() as conn:
+        query = """
+            SELECT symbol, split_date, split_ratio, raw_price_before, raw_price_after, adjusted_price
+            FROM stock_splits 
+            WHERE symbol = $1 
+            ORDER BY split_date ASC
+        """
+        rows = await conn.fetch(query, symbol.upper())
+        
+        return [
+            {
+                "symbol": row["symbol"],
+                "split_date": row["split_date"].isoformat(),
+                "split_ratio": float(row["split_ratio"]),
+                "raw_price_before": float(row["raw_price_before"]) if row["raw_price_before"] else None,
+                "raw_price_after": float(row["raw_price_after"]) if row["raw_price_after"] else None,
+                "adjusted_price": float(row["adjusted_price"]) if row["adjusted_price"] else None
+            }
+            for row in rows
+        ]
+
 @app.get("/api/historical-data/{symbol}")
 async def get_historical_data(
     symbol: str, 
     timeframe: str = "1D",
-    limit: int = 100
+    limit: int = 100,
+    adjust_for_splits: bool = True
 ) -> List[Dict[str, Any]]:
-    """Get historical price data for K-line charts"""
+    """Get historical OHLCV data for a symbol with optional split adjustment."""
     if not db_pool:
-        return []
+        raise HTTPException(500, "Database not available")
     
-    try:
-        # Validate timeframe
-        valid_timeframes = ["1D", "1W", "1M"]
-        if timeframe not in valid_timeframes:
-            timeframe = "1D"
-        
-        # Calculate date range based on timeframe and limit
+    # Default to last 2 years of data if no limit specified
+    if limit == 0:
         end_date = datetime.now(timezone.utc)
-        if timeframe == "1D":
-            start_date = end_date - timedelta(days=limit if limit > 0 else 3650)
-        elif timeframe == "1W":
-            start_date = end_date - timedelta(weeks=limit if limit > 0 else 520)
-        else:  # 1M
-            start_date = end_date - timedelta(days=(limit if limit > 0 else 120) * 30)
-        
-        async with db_pool.acquire() as conn:
-            if timeframe == "1D":
-                query = """
-                    SELECT 
-                        symbol,
-                        timestamp,
-                        open_price as open,
-                        high_price as high,
-                        low_price as low,
-                        close_price as close,
-                        volume
-                    FROM price_ticks 
-                    WHERE symbol = $1 
-                        AND timestamp >= $2 
-                        AND timestamp <= $3
-                        AND open_price IS NOT NULL
-                        AND high_price IS NOT NULL
-                        AND low_price IS NOT NULL
-                        AND close_price IS NOT NULL
-                    ORDER BY timestamp ASC
-                """
-                if limit > 0:
-                    query += " LIMIT $4"
-                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
-                else:
-                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
-            else:
-                # Weekly/Monthly data - aggregate from daily data
-                if timeframe == "1W":
-                    interval = "week"
-                else:
-                    interval = "month"
-                
-                query = f"""
-                    SELECT 
-                        symbol,
-                        date_trunc('{interval}', timestamp) as timestamp,
-                        first(open_price, timestamp) as open,
-                        max(high_price) as high,
-                        min(low_price) as low,
-                        last(close_price, timestamp) as close,
-                        sum(volume) as volume
-                    FROM price_ticks 
-                    WHERE symbol = $1 
-                        AND timestamp >= $2 
-                        AND timestamp <= $3
-                        AND open_price IS NOT NULL
-                        AND high_price IS NOT NULL
-                        AND low_price IS NOT NULL
-                        AND close_price IS NOT NULL
-                    GROUP BY symbol, date_trunc('{interval}', timestamp)
-                    ORDER BY timestamp ASC
-                """
-                if limit > 0:
-                    query += " LIMIT $4"
-                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
-                else:
-                    rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
-            
-            # Convert to candlestick format
-            candles = []
-            for row in rows:
-                candles.append({
-                    "timestamp": row["timestamp"].isoformat(),
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": int(row["volume"]) if row["volume"] else 0
-                })
-            
-            logger.info(f"Fetched {len(candles)} {timeframe} candles for {symbol}")
+        start_date = end_date - timedelta(days=730)  # 2 years
+    else:
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=365)  # 1 year for limited requests
+
+    async def apply_split_adjustments(candles: List[Dict], splits: List[Dict]) -> List[Dict]:
+        """Apply split adjustments to historical data for display continuity."""
+        if not splits:
             return candles
+        
+        adjusted_candles = []
+        cumulative_adjustment = 1.0
+        
+        # Sort splits by date (newest first) for reverse adjustment
+        splits_by_date = sorted(splits, key=lambda x: x['split_date'], reverse=True)
+        
+        for candle in candles:
+            candle_date = datetime.fromisoformat(candle['timestamp']).date()
             
-    except Exception as e:
-        logger.error(f"Error fetching historical data for {symbol}: {e}")
-        return []
+            # Calculate cumulative adjustment for this candle date
+            adjustment = 1.0
+            for split in splits_by_date:
+                split_date = datetime.fromisoformat(split['split_date']).date()
+                if candle_date < split_date:
+                    adjustment *= split['split_ratio']
+            
+            # Apply adjustment to prices (divide) and volume (multiply)
+            adjusted_candle = candle.copy()
+            if adjustment != 1.0:
+                adjusted_candle['open'] = candle['open'] / adjustment
+                adjusted_candle['high'] = candle['high'] / adjustment
+                adjusted_candle['low'] = candle['low'] / adjustment
+                adjusted_candle['close'] = candle['close'] / adjustment
+                adjusted_candle['volume'] = int(candle['volume'] * adjustment)
+            
+            adjusted_candles.append(adjusted_candle)
+        
+        return adjusted_candles
+        
+    async with db_pool.acquire() as conn:
+        if timeframe == "1D":
+            query = """
+                SELECT 
+                    symbol,
+                    timestamp,
+                    open_price as open,
+                    high_price as high,
+                    low_price as low,
+                    close_price as close,
+                    volume
+                FROM price_ticks 
+                WHERE symbol = $1 
+                    AND timestamp >= $2 
+                    AND timestamp <= $3
+                    AND open_price IS NOT NULL
+                    AND high_price IS NOT NULL
+                    AND low_price IS NOT NULL
+                    AND close_price IS NOT NULL
+                ORDER BY timestamp ASC
+            """
+            if limit > 0:
+                query += " LIMIT $4"
+                rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+            else:
+                rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
+        else:
+            # Weekly/Monthly data - aggregate from daily data
+            if timeframe == "1W":
+                interval = "week"
+            else:
+                interval = "month"
+            
+            query = f"""
+                SELECT 
+                    symbol,
+                    date_trunc('{interval}', timestamp) as timestamp,
+                    first(open_price, timestamp) as open,
+                    max(high_price) as high,
+                    min(low_price) as low,
+                    last(close_price, timestamp) as close,
+                    sum(volume) as volume
+                FROM price_ticks 
+                WHERE symbol = $1 
+                    AND timestamp >= $2 
+                    AND timestamp <= $3
+                    AND open_price IS NOT NULL
+                    AND high_price IS NOT NULL
+                    AND low_price IS NOT NULL
+                    AND close_price IS NOT NULL
+                GROUP BY symbol, date_trunc('{interval}', timestamp)
+                ORDER BY timestamp ASC
+            """
+            if limit > 0:
+                query += " LIMIT $4"
+                rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+            else:
+                rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
+        
+        # Convert to candlestick format
+        candles = []
+        for row in rows:
+            candles.append({
+                "timestamp": row["timestamp"].isoformat(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"]) if row["volume"] else 0
+            })
+        
+        # Apply split adjustments if requested
+        if adjust_for_splits and candles:
+            # Get split events for this symbol
+            splits_query = """
+                SELECT split_date, split_ratio 
+                FROM stock_splits 
+                WHERE symbol = $1 
+                ORDER BY split_date ASC
+            """
+            split_rows = await conn.fetch(splits_query, symbol.upper())
+            splits = [
+                {
+                    "split_date": row["split_date"].isoformat(),
+                    "split_ratio": float(row["split_ratio"])
+                }
+                for row in split_rows
+            ]
+            
+            if splits:
+                candles = await apply_split_adjustments(candles, splits)
+        
+        return candles
 
 @app.get("/api/available-symbols")
 async def get_available_symbols() -> List[str]:

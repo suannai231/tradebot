@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import List, Dict, Tuple
 
 import aiohttp
 import asyncpg
@@ -42,8 +42,7 @@ async def fetch_historical_bars(session: aiohttp.ClientSession, symbol: str, sta
         "end": end,
         "timeframe": timeframe,
         "limit": 10000,
-        # Use split-adjusted prices to handle stock splits
-        "adjustment": "split",
+        "adjustment": "raw",  # Changed to raw for accurate volume
         "feed": "iex"  # Use IEX feed for free tier
     }
     
@@ -147,9 +146,16 @@ async def backfill_symbol(session: aiohttp.ClientSession, pool: asyncpg.Pool, sy
     start_str = start_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_str   = end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Fetch daily bars only for the missing range
-    bars = await fetch_historical_bars(session, symbol, start_str, end_str, "1Day")
-    await store_bars(pool, symbol, bars)
+    # Fetch both raw and split-adjusted bars for split detection
+    raw_bars = await fetch_historical_bars(session, symbol, start_str, end_str, "1Day")
+    split_bars = await fetch_split_adjusted_bars(session, symbol, start_str, end_str, "1Day")
+    
+    # Store raw bars (for accurate volume and recent prices)
+    await store_bars(pool, symbol, raw_bars)
+    
+    # Detect and store splits by comparing raw vs split-adjusted data
+    if raw_bars and split_bars:
+        await detect_and_store_splits(pool, symbol, raw_bars, split_bars)
 
 
 async def init_database(pool: asyncpg.Pool):
@@ -178,6 +184,26 @@ async def init_database(pool: asyncpg.Pool):
                 ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS trade_count INTEGER;
                 ALTER TABLE price_ticks ADD COLUMN IF NOT EXISTS vwap DECIMAL(10,4);
             END $$;
+        """)
+        
+        # Create stock splits table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS stock_splits (
+                symbol TEXT NOT NULL,
+                split_date DATE NOT NULL,
+                split_ratio DECIMAL(10,4) NOT NULL,
+                raw_price_before DECIMAL(15,4),
+                raw_price_after DECIMAL(15,4),
+                adjusted_price DECIMAL(15,4),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (symbol, split_date)
+            );
+        """)
+        
+        # Create index for efficient split lookups
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stock_splits_symbol_date 
+            ON stock_splits (symbol, split_date DESC);
         """)
         
         try:
@@ -210,6 +236,101 @@ async def initialize_symbols():
     SYMBOLS = all_symbols[:MAX_BACKFILL_SYMBOLS]
     logger.info("Loaded %d symbols in '%s' mode for backfill (limited to %d)", 
                len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
+
+
+async def detect_and_store_splits(pool: asyncpg.Pool, symbol: str, raw_bars: List[dict], split_bars: List[dict]):
+    """Detect stock splits by comparing raw and split-adjusted data, then store in database."""
+    if len(raw_bars) != len(split_bars) or len(raw_bars) < 2:
+        return
+    
+    splits_detected = []
+    
+    for i in range(len(raw_bars)):
+        raw_bar = raw_bars[i]
+        split_bar = split_bars[i]
+        
+        # Calculate split ratio by comparing raw vs adjusted close prices
+        raw_close = raw_bar["c"]
+        adj_close = split_bar["c"]
+        
+        if adj_close > 0:
+            split_ratio = raw_close / adj_close
+            
+            # If ratio is significantly different from 1, it indicates cumulative splits
+            if abs(split_ratio - 1.0) > 0.01:  # More than 1% difference
+                timestamp = datetime.fromisoformat(raw_bar["t"].replace("Z", "+00:00"))
+                
+                # Check if this is a new split point (ratio changed from previous bar)
+                if i > 0:
+                    prev_raw = raw_bars[i-1]["c"]
+                    prev_adj = split_bars[i-1]["c"]
+                    prev_ratio = prev_raw / prev_adj if prev_adj > 0 else 1.0
+                    
+                    # Detect actual split event (ratio jump)
+                    ratio_change = split_ratio / prev_ratio
+                    if ratio_change > 1.5:  # 50%+ ratio increase indicates a split
+                        split_factor = round(ratio_change)
+                        splits_detected.append({
+                            'symbol': symbol,
+                            'split_date': timestamp.date(),
+                            'split_ratio': split_factor,
+                            'raw_price_before': prev_raw,
+                            'raw_price_after': raw_close,
+                            'adj_price': adj_close
+                        })
+    
+    # Store detected splits in database
+    if splits_detected:
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """INSERT INTO stock_splits (symbol, split_date, split_ratio, raw_price_before, raw_price_after, adjusted_price) 
+                   VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (symbol, split_date) DO UPDATE SET
+                   split_ratio = EXCLUDED.split_ratio,
+                   raw_price_before = EXCLUDED.raw_price_before,
+                   raw_price_after = EXCLUDED.raw_price_after,
+                   adjusted_price = EXCLUDED.adjusted_price""",
+                [(s['symbol'], s['split_date'], s['split_ratio'], s['raw_price_before'], 
+                  s['raw_price_after'], s['adj_price']) for s in splits_detected]
+            )
+        
+        logger.info(f"Detected and stored {len(splits_detected)} splits for {symbol}")
+        for split in splits_detected:
+            logger.info(f"  {split['split_date']}: {split['split_ratio']}:1 split "
+                       f"(${split['raw_price_before']:.2f} → ${split['raw_price_after']:.2f})")
+
+
+async def fetch_split_adjusted_bars(session: aiohttp.ClientSession, symbol: str, start: str, end: str, timeframe: str = "1Day"):
+    """Fetch split-adjusted bars for split detection."""
+    url = f"{BASE_URL}/{symbol}/bars"
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET,
+    }
+    params = {
+        "start": start,
+        "end": end,
+        "timeframe": timeframe,
+        "limit": 10000,
+        "adjustment": "split",
+        "feed": "iex"
+    }
+    
+    try:
+        async with session.get(url, headers=headers, params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data.get("bars", [])
+            elif response.status == 403:
+                # Try without feed parameter
+                params.pop("feed", None)
+                async with session.get(url, headers=headers, params=params) as retry_response:
+                    if retry_response.status == 200:
+                        data = await retry_response.json()
+                        return data.get("bars", [])
+    except Exception as e:
+        logger.warning(f"Failed to fetch split-adjusted data for {symbol}: {e}")
+    
+    return []
 
 
 async def main():

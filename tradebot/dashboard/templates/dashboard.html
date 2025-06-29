@@ -198,25 +198,45 @@
             <div class="col-12">
                 <div class="card">
                     <div class="card-header d-flex align-items-center">
-                        <h5 class="mb-0"><i class="fas fa-play"></i> Back-test</h5>
+                        <h5 class="mb-0"><i class="fas fa-play"></i> Strategy Comparison Back-test</h5>
                     </div>
                     <div class="card-body">
                         <div class="row g-2 align-items-end">
-                            <div class="col-sm-2"><input id="bt-symbol" type="text" class="form-control form-control-sm" placeholder="Symbol" /></div>
+                            <div class="col-sm-3"><input id="bt-symbol" type="text" class="form-control form-control-sm" placeholder="Enter Symbol (e.g., AAPL)" /></div>
+                            <div class="col-sm-3"><input id="bt-start" type="date" class="form-control form-control-sm" /></div>
+                            <div class="col-sm-3"><input id="bt-end" type="date" class="form-control form-control-sm" /></div>
                             <div class="col-sm-3">
-                                <select id="bt-strategy" class="form-select form-select-sm">
-                                    <option value="mean_reversion">Mean Reversion</option>
-                                    <option value="simple_ma">Simple MA</option>
-                                    <option value="advanced">Advanced</option>
-                                </select>
-                            </div>
-                            <div class="col-sm-2"><input id="bt-start" type="date" class="form-control form-control-sm" /></div>
-                            <div class="col-sm-2"><input id="bt-end" type="date" class="form-control form-control-sm" /></div>
-                            <div class="col-sm-1">
-                                <button id="bt-run" class="btn btn-primary btn-sm w-100" onclick="runBacktest()"><i class="fas fa-play"></i></button>
+                                <button id="bt-run" class="btn btn-primary btn-sm w-100" onclick="runAllStrategiesBacktest()">
+                                    <i class="fas fa-play"></i> Run All Strategies
+                                </button>
                             </div>
                         </div>
-                        <pre id="bt-result" class="small mt-3"></pre>
+                        
+                        <!-- Results Table -->
+                        <div id="bt-results-container" class="mt-4" style="display: none;">
+                            <h6><i class="fas fa-chart-line"></i> Strategy Comparison Results</h6>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover table-sm">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>Strategy</th>
+                                            <th>Return %</th>
+                                            <th>Trades</th>
+                                            <th>Win Rate %</th>
+                                            <th>Sharpe Ratio</th>
+                                            <th>Max Drawdown %</th>
+                                            <th>Profit Factor</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="bt-results-table">
+                                        <!-- Results will be populated here -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <!-- Loading/Status -->
+                        <div id="bt-status" class="mt-3"></div>
                     </div>
                 </div>
             </div>
@@ -342,40 +362,186 @@
         // kick off connection after page load
         connectWebSocket();
 
-        // Backtest function as fallback - make it globally accessible
-        window.runBacktest = async function() {
-            console.log('runBacktest() called from onclick');
+        // Set default backtest dates
+        function setDefaultBacktestDates() {
+            const today = new Date();
+            const oneYearAgo = new Date();
+            oneYearAgo.setFullYear(today.getFullYear() - 1);
+            
+            // Format dates as YYYY-MM-DD
+            const formatDate = (date) => {
+                return date.toISOString().split('T')[0];
+            };
+            
+            document.getElementById('bt-start').value = formatDate(oneYearAgo);
+            document.getElementById('bt-end').value = formatDate(today);
+        }
+
+        // Set default dates when page loads
+        setDefaultBacktestDates();
+
+        // All available strategies
+        const ALL_STRATEGIES = [
+            'mean_reversion',
+            'simple_ma', 
+            'advanced',
+            'low_volume',
+            'momentum_breakout',
+            'volatility_mean_reversion',
+            'gap_trading',
+            'multi_timeframe',
+            'risk_managed',
+            'aggressive_mean_reversion',
+            'enhanced_momentum',
+            'multi_timeframe_momentum'
+        ];
+
+        // Strategy display names
+        const STRATEGY_NAMES = {
+            'mean_reversion': 'Mean Reversion',
+            'simple_ma': 'Simple MA',
+            'advanced': 'Advanced',
+            'low_volume': 'Low Volume',
+            'momentum_breakout': 'Momentum Breakout',
+            'volatility_mean_reversion': 'Volatility Mean Reversion',
+            'gap_trading': 'Gap Trading',
+            'multi_timeframe': 'Multi Timeframe',
+            'risk_managed': 'Risk Managed',
+            'aggressive_mean_reversion': 'Aggressive Mean Reversion',
+            'enhanced_momentum': 'Enhanced Momentum',
+            'multi_timeframe_momentum': 'Multi Timeframe Momentum'
+        };
+
+        // New function to run all strategies backtest
+        window.runAllStrategiesBacktest = async function() {
+            console.log('runAllStrategiesBacktest() called');
             const sym = document.getElementById('bt-symbol').value.trim().toUpperCase();
-            const strat = document.getElementById('bt-strategy').value;
             const startRaw = document.getElementById('bt-start').value;
             const endRaw = document.getElementById('bt-end').value;
-            console.log('Backtest inputs:', { sym, strat, startRaw, endRaw });
             
-            // convert to ISO yyyy-mm-dd regardless of browser locale
-            const start = new Date(startRaw).toISOString().slice(0,10);
-            const end   = new Date(endRaw).toISOString().slice(0,10);
-            const out = document.getElementById('bt-result');
-            if (!sym || !start || !end) {
-                out.textContent = 'Please enter symbol, start and end dates.';
+            // Validate inputs
+            if (!sym || !startRaw || !endRaw) {
+                document.getElementById('bt-status').innerHTML = '<div class="alert alert-warning">Please enter symbol, start and end dates.</div>';
                 return;
             }
-            out.textContent = 'Running back-test…';
-            try {
-                console.log('Making backtest API call...');
-                const resp = await fetch(`/api/backtest?symbol=${sym}&strategy=${strat}&start=${start}&end=${end}`);
-                console.log('Backtest response:', resp);
-                if (!resp.ok) {
-                    const txt = await resp.text();
-                    throw new Error(txt);
+            
+            // Convert dates to ISO format
+            const start = new Date(startRaw).toISOString().slice(0,10);
+            const end = new Date(endRaw).toISOString().slice(0,10);
+            
+            // Show loading status
+            const statusDiv = document.getElementById('bt-status');
+            const resultsContainer = document.getElementById('bt-results-container');
+            const resultsTable = document.getElementById('bt-results-table');
+            
+            statusDiv.innerHTML = `<div class="alert alert-info">
+                <i class="fas fa-spinner fa-spin"></i> Running backtest for ${sym} across ${ALL_STRATEGIES.length} strategies...
+                <div class="progress mt-2">
+                    <div id="bt-progress" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                </div>
+            </div>`;
+            
+            resultsContainer.style.display = 'none';
+            resultsTable.innerHTML = '';
+            
+            const results = [];
+            let completedStrategies = 0;
+            
+            // Test each strategy
+            for (const strategy of ALL_STRATEGIES) {
+                try {
+                    console.log(`Testing strategy: ${strategy}`);
+                    const response = await fetch(`/api/backtest?symbol=${sym}&strategy=${strategy}&start=${start}&end=${end}`);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                    }
+                    
+                    const data = await response.json();
+                    results.push({
+                        strategy: strategy,
+                        name: STRATEGY_NAMES[strategy],
+                        ...data
+                    });
+                    
+                } catch (error) {
+                    console.error(`Error testing ${strategy}:`, error);
+                    results.push({
+                        strategy: strategy,
+                        name: STRATEGY_NAMES[strategy],
+                        error: error.message,
+                        total_return_pct: 0,
+                        total_trades: 0,
+                        win_rate: 0,
+                        sharpe_ratio: 0,
+                        max_drawdown: 0,
+                        profit_factor: 0
+                    });
                 }
-                const data = await resp.json();
-                console.log('Backtest data:', data);
-                out.textContent = `${sym} ${strat}\nReturn: ${data.total_return_pct.toFixed(2)}%\nTrades: ${data.total_trades}\nWin-rate: ${data.win_rate.toFixed(1)}%\nSharpe: ${data.sharpe_ratio.toFixed(2)}`;
-            } catch (e) {
-                console.error('Backtest error:', e);
-                out.textContent = 'Error: ' + (e.message || e);
+                
+                // Update progress
+                completedStrategies++;
+                const progress = (completedStrategies / ALL_STRATEGIES.length) * 100;
+                document.getElementById('bt-progress').style.width = `${progress}%`;
             }
+            
+            // Sort results by return percentage (best first)
+            results.sort((a, b) => (b.total_return_pct || 0) - (a.total_return_pct || 0));
+            
+            // Display results in table
+            displayBacktestResults(sym, results);
+            
+            // Hide loading status
+            statusDiv.innerHTML = `<div class="alert alert-success">
+                <i class="fas fa-check-circle"></i> Backtest completed for ${sym}! 
+                Tested ${ALL_STRATEGIES.length} strategies from ${start} to ${end}.
+            </div>`;
         };
+
+        function displayBacktestResults(symbol, results) {
+            const resultsTable = document.getElementById('bt-results-table');
+            const resultsContainer = document.getElementById('bt-results-container');
+            
+            resultsTable.innerHTML = '';
+            
+            results.forEach((result, index) => {
+                const row = document.createElement('tr');
+                
+                // Add ranking class for top performers
+                if (index === 0 && result.total_return_pct > 0) {
+                    row.classList.add('table-success');
+                } else if (index < 3 && result.total_return_pct > 0) {
+                    row.classList.add('table-light');
+                } else if (result.total_return_pct < -10) {
+                    row.classList.add('table-danger');
+                }
+                
+                const returnPct = result.total_return_pct || 0;
+                const trades = result.total_trades || 0;
+                const winRate = result.win_rate || 0;
+                const sharpe = result.sharpe_ratio || 0;
+                const maxDrawdown = result.max_drawdown || 0;
+                const profitFactor = result.profit_factor || 0;
+                
+                // Format cells with appropriate styling
+                const returnClass = returnPct > 0 ? 'text-success' : returnPct < 0 ? 'text-danger' : 'text-muted';
+                const sharpeClass = sharpe > 0.5 ? 'text-success' : sharpe < 0 ? 'text-danger' : 'text-muted';
+                
+                row.innerHTML = `
+                    <td><strong>${result.name}</strong>${result.error ? ' <i class="fas fa-exclamation-triangle text-warning" title="' + result.error + '"></i>' : ''}</td>
+                    <td class="${returnClass}"><strong>${returnPct.toFixed(2)}%</strong></td>
+                    <td>${trades}</td>
+                    <td>${winRate.toFixed(1)}%</td>
+                    <td class="${sharpeClass}">${sharpe.toFixed(2)}</td>
+                    <td class="text-warning">${maxDrawdown.toFixed(1)}%</td>
+                    <td>${profitFactor.toFixed(2)}</td>
+                `;
+                
+                resultsTable.appendChild(row);
+            });
+            
+            resultsContainer.style.display = 'block';
+        }
     </script>
 </body>
 </html> 

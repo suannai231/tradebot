@@ -6,6 +6,12 @@ services:
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   timescaledb:
     image: timescale/timescaledb:latest-pg16
@@ -16,6 +22,12 @@ services:
     ports: ["5432:5432"]
     volumes:
       - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tradebot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ───────── Core micro-services ─────
   market_data:
@@ -28,7 +40,9 @@ services:
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
-    depends_on: [ redis ]
+    depends_on:
+      redis:
+        condition: service_healthy
     profiles: [ "synthetic", "default" ]  # Synthetic tick generation
 
   # Real market data from Alpaca (requires API credentials)
@@ -42,7 +56,9 @@ services:
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
-    depends_on: [ redis ]
+    depends_on:
+      redis:
+        condition: service_healthy
     profiles: [ "alpaca" ]  # Only run when explicitly requested
 
   strategy:
@@ -53,7 +69,9 @@ services:
       - SERVICE_NAME=strategy
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
-    depends_on: [ redis ]
+    depends_on:
+      redis:
+        condition: service_healthy
 
   execution:
     build: .
@@ -63,7 +81,9 @@ services:
       - SERVICE_NAME=execution
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
-    depends_on: [ redis ]
+    depends_on:
+      redis:
+        condition: service_healthy
 
   storage:
     build: .
@@ -73,7 +93,11 @@ services:
       - SERVICE_NAME=storage
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
-    depends_on: [ redis, timescaledb ]
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
 
   # ───────── API + Dashboard ─────────
   api:
@@ -85,7 +109,9 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     ports: ["8000:8000"]
-    depends_on: [ timescaledb ]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
 
   dashboard:
     build: .
@@ -99,7 +125,11 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
     ports: ["8001:8001"]
-    depends_on: [ redis, timescaledb ]
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
 
 volumes:
   timescale_data: 

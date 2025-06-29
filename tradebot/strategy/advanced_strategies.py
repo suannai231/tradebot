@@ -4,11 +4,20 @@ from collections import deque, defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+import asyncpg
+import aiohttp
 
 from tradebot.common.models import PriceTick, Signal, Side
 
 logger = logging.getLogger("advanced_strategies")
 
+# NOTE: This file contains consolidated strategies from the former high_return_strategies.py
+# All high-return strategies have been integrated into this single advanced strategies module
+# Available high-return strategies:
+# - AggressiveMeanReversionStrategy: Aggressive mean reversion with tight risk management
+# - EnhancedMomentumStrategy: Enhanced momentum breakout with volume confirmation  
+# - MultiTimeframeMomentumStrategy: Multi-timeframe momentum for higher returns
+# Use create_strategy() or create_high_return_strategy() factory functions to create instances
 
 @dataclass
 class StrategyConfig:
@@ -37,6 +46,151 @@ class StrategyConfig:
     
     # Composite scoring
     min_composite_score: float = 0.7
+
+
+class SplitAwareDataProvider:
+    """Provides split-aware data for strategy analysis."""
+    
+    def __init__(self, db_pool: asyncpg.Pool):
+        self.db_pool = db_pool
+        self._split_cache: Dict[str, List[Dict]] = {}
+    
+    async def get_splits(self, symbol: str) -> List[Dict]:
+        """Get split events for a symbol with caching."""
+        if symbol not in self._split_cache:
+            async with self.db_pool.acquire() as conn:
+                query = """
+                    SELECT split_date, split_ratio 
+                    FROM stock_splits 
+                    WHERE symbol = $1 
+                    ORDER BY split_date ASC
+                """
+                rows = await conn.fetch(query, symbol.upper())
+                self._split_cache[symbol] = [
+                    {
+                        "split_date": row["split_date"],
+                        "split_ratio": float(row["split_ratio"])
+                    }
+                    for row in rows
+                ]
+        return self._split_cache[symbol]
+    
+    async def get_raw_volume_data(self, symbol: str, days_back: int = 30) -> List[Dict]:
+        """Get raw volume data for accurate volume analysis."""
+        async with self.db_pool.acquire() as conn:
+            query = """
+                SELECT timestamp, volume, close_price
+                FROM price_ticks 
+                WHERE symbol = $1 
+                    AND timestamp >= NOW() - INTERVAL '%s days'
+                    AND volume IS NOT NULL
+                ORDER BY timestamp ASC
+            """
+            rows = await conn.fetch(query, symbol.upper(), days_back)
+            return [
+                {
+                    "timestamp": row["timestamp"],
+                    "volume": int(row["volume"]),
+                    "price": float(row["close_price"])
+                }
+                for row in rows
+            ]
+    
+    async def get_split_adjusted_prices(self, symbol: str, days_back: int = 365) -> List[Dict]:
+        """Get split-adjusted prices for trend analysis."""
+        # Get raw price data
+        async with self.db_pool.acquire() as conn:
+            query = """
+                SELECT timestamp, open_price, high_price, low_price, close_price
+                FROM price_ticks 
+                WHERE symbol = $1 
+                    AND timestamp >= NOW() - INTERVAL '%s days'
+                    AND close_price IS NOT NULL
+                ORDER BY timestamp ASC
+            """
+            rows = await conn.fetch(query, symbol.upper(), days_back)
+            
+            raw_data = [
+                {
+                    "timestamp": row["timestamp"],
+                    "open": float(row["open_price"]),
+                    "high": float(row["high_price"]),
+                    "low": float(row["low_price"]),
+                    "close": float(row["close_price"])
+                }
+                for row in rows
+            ]
+        
+        # Apply split adjustments
+        splits = await self.get_splits(symbol)
+        if not splits:
+            return raw_data
+        
+        adjusted_data = []
+        for data_point in raw_data:
+            adjustment = 1.0
+            for split in splits:
+                if data_point["timestamp"].date() < split["split_date"]:
+                    adjustment *= split["split_ratio"]
+            
+            adjusted_point = data_point.copy()
+            if adjustment != 1.0:
+                adjusted_point["open"] /= adjustment
+                adjusted_point["high"] /= adjustment
+                adjusted_point["low"] /= adjustment
+                adjusted_point["close"] /= adjustment
+            
+            adjusted_data.append(adjusted_point)
+        
+        return adjusted_data
+
+
+class SplitAwareStrategy:
+    """Base class for strategies that need split-aware data analysis."""
+    
+    def __init__(self, db_pool: asyncpg.Pool):
+        self.data_provider = SplitAwareDataProvider(db_pool)
+        self.last_analysis: Dict[str, datetime] = {}
+    
+    async def analyze_with_split_awareness(self, symbol: str) -> Optional[Dict]:
+        """Analyze a symbol using both raw volume and split-adjusted prices."""
+        try:
+            # Get raw volume data for accurate volume analysis
+            volume_data = await self.data_provider.get_raw_volume_data(symbol, days_back=30)
+            
+            # Get split-adjusted prices for trend analysis
+            price_data = await self.data_provider.get_split_adjusted_prices(symbol, days_back=90)
+            
+            if not volume_data or not price_data:
+                return None
+            
+            # Calculate volume metrics using raw data
+            recent_volumes = [d["volume"] for d in volume_data[-20:]]  # Last 20 days
+            avg_volume = sum(recent_volumes) / len(recent_volumes)
+            current_volume = volume_data[-1]["volume"]
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+            
+            # Calculate price metrics using split-adjusted data
+            recent_prices = [d["close"] for d in price_data[-20:]]  # Last 20 days
+            price_change = (recent_prices[-1] - recent_prices[0]) / recent_prices[0] if recent_prices[0] > 0 else 0
+            
+            # Combine analysis
+            analysis = {
+                "symbol": symbol,
+                "volume_ratio": volume_ratio,
+                "avg_volume": avg_volume,
+                "current_volume": current_volume,
+                "price_change_20d": price_change,
+                "current_price": recent_prices[-1],
+                "analysis_timestamp": datetime.now(timezone.utc)
+            }
+            
+            self.last_analysis[symbol] = analysis["analysis_timestamp"]
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Error in split-aware analysis for {symbol}: {e}")
+            return None
 
 
 class AdvancedBuyStrategy:
@@ -556,6 +710,10 @@ def create_strategy(strategy_type: str, **kwargs):
         return AggressiveMeanReversionStrategy(**kwargs)
     elif strategy_type == "enhanced_momentum":
         return EnhancedMomentumStrategy(**kwargs)
+    elif strategy_type == "high_return_momentum":
+        return EnhancedMomentumStrategy(**kwargs)
+    elif strategy_type == "multi_timeframe_momentum":
+        return MultiTimeframeMomentumStrategy(**kwargs)
     else:
         raise ValueError(f"Unknown strategy type: {strategy_type}")
 
@@ -1050,4 +1208,106 @@ class EnhancedMomentumStrategy:
             logger.info(f"Enhanced momentum fade exit for {symbol}: price={current_price:.2f}")
             return Signal(symbol=symbol, side=Side.sell, price=current_price, timestamp=tick.timestamp, confidence=1.0)
         
-        return None 
+        return None
+
+
+@dataclass
+class AggressiveConfig:
+    """Configuration for aggressive high-return strategies"""
+    # More aggressive RSI thresholds
+    rsi_oversold: float = 25  # More aggressive than 30
+    rsi_overbought: float = 75  # More aggressive than 70
+    
+    # Tighter stop-losses for better risk management
+    stop_loss: float = 0.015  # 1.5% stop-loss
+    take_profit: float = 0.05  # 5% take-profit
+    
+    # More sensitive mean reversion
+    z_score_threshold: float = -1.5  # More sensitive than -2.0
+    
+    # Volume confirmation
+    volume_multiplier: float = 2.0  # Higher volume requirement
+    
+    # Momentum thresholds
+    momentum_threshold: float = 0.03  # 3% daily move for momentum
+
+
+class MultiTimeframeMomentumStrategy:
+    """Multi-timeframe momentum strategy for higher returns."""
+    
+    def __init__(self, short_lookback: int = 5, medium_lookback: int = 15, 
+                 long_lookback: int = 30, stop_loss: float = 0.02):
+        self.short_lookback = short_lookback
+        self.medium_lookback = medium_lookback
+        self.long_lookback = long_lookback
+        self.stop_loss = stop_loss
+        
+        self.prices: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
+        self.entry_prices: Dict[str, float] = {}
+        self.last_side: Dict[str, Side] = defaultdict(lambda: None)
+        self.last_signals: Dict[str, datetime] = defaultdict(lambda: datetime.min.replace(tzinfo=timezone.utc))
+    
+    def update_data(self, tick: PriceTick):
+        symbol = tick.symbol
+        self.prices[symbol].append(tick.price)
+    
+    def on_tick(self, tick: PriceTick) -> Optional[Signal]:
+        symbol = tick.symbol
+        self.update_data(tick)
+        
+        # Check stop-loss
+        if self.last_side[symbol] == Side.buy and symbol in self.entry_prices:
+            entry_price = self.entry_prices[symbol]
+            current_price = tick.price
+            
+            if current_price <= entry_price * (1 - self.stop_loss):
+                self.last_side[symbol] = Side.sell
+                logger.info(f"Multi-timeframe stop-loss for {symbol}: entry={entry_price:.2f}, exit={current_price:.2f}")
+                return Signal(symbol=symbol, side=Side.sell, price=current_price, timestamp=tick.timestamp, confidence=1.0)
+        
+        prices = list(self.prices[symbol])
+        if len(prices) < self.long_lookback:
+            return None
+        
+        current_price = prices[-1]
+        
+        # Multi-timeframe analysis
+        short_ma = np.mean(prices[-self.short_lookback:])
+        medium_ma = np.mean(prices[-self.medium_lookback:])
+        long_ma = np.mean(prices[-self.long_lookback:])
+        
+        # All timeframes aligned bullish
+        bullish_alignment = (current_price > short_ma > medium_ma > long_ma)
+        
+        # Short-term momentum
+        short_momentum = (current_price / short_ma - 1) > 0.02  # 2% above short MA
+        
+        # Buy signal: all timeframes bullish + short momentum
+        if bullish_alignment and short_momentum and self.last_side[symbol] != Side.buy:
+            self.last_side[symbol] = Side.buy
+            self.entry_prices[symbol] = current_price
+            logger.info(f"Multi-timeframe buy for {symbol}: price={current_price:.2f}")
+            return Signal(symbol=symbol, side=Side.buy, price=current_price, timestamp=tick.timestamp, confidence=1.0)
+        
+        # Sell signal: any timeframe breaks down
+        elif (current_price < short_ma or current_price < medium_ma) and self.last_side[symbol] == Side.buy:
+            self.last_side[symbol] = Side.sell
+            logger.info(f"Multi-timeframe sell for {symbol}: price={current_price:.2f}")
+            return Signal(symbol=symbol, side=Side.sell, price=current_price, timestamp=tick.timestamp, confidence=1.0)
+        
+        return None
+
+
+def create_high_return_strategy(strategy_type: str, **kwargs):
+    """Factory function to create high-return strategy instances."""
+    if strategy_type == "aggressive_mean_reversion":
+        return AggressiveMeanReversionStrategy(**kwargs)
+    elif strategy_type == "enhanced_momentum":
+        return EnhancedMomentumStrategy(**kwargs)
+    elif strategy_type == "multi_timeframe_momentum":
+        return MultiTimeframeMomentumStrategy(**kwargs)
+    elif strategy_type == "high_return_momentum":
+        return EnhancedMomentumStrategy(**kwargs)  # Alias for enhanced_momentum
+    else:
+        # Fall back to regular strategy creation for compatibility
+        return create_strategy(strategy_type, **kwargs) 
