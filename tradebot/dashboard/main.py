@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 import redis.asyncio as redis
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
@@ -470,9 +470,11 @@ async def get_stock_splits(symbol: str) -> List[Dict[str, Any]]:
 @app.get("/api/historical-data/{symbol}")
 async def get_historical_data(
     symbol: str, 
+    response: Response,
     timeframe: str = "1D",
     limit: int = 100,
-    adjust_for_splits: bool = True
+    adjust_for_splits: bool = True,
+    adjust_method: str = "forward"
 ) -> List[Dict[str, Any]]:
     """Get historical OHLCV data for a symbol with optional split adjustment."""
     if not db_pool:
@@ -486,35 +488,59 @@ async def get_historical_data(
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=365)  # 1 year for limited requests
 
-    async def apply_split_adjustments(candles: List[Dict], splits: List[Dict]) -> List[Dict]:
-        """Apply split adjustments to historical data for display continuity."""
+    async def apply_split_adjustments(candles: List[Dict], splits: List[Dict], method: str = "backward") -> List[Dict]:
+        """Apply split adjustments (forward or backward) to historical data for display continuity.
+
+        backward → divide prices of dates *before* a split by cumulative ratio of future splits (default).
+        forward  → divide prices of dates *on / after* a split by cumulative ratio of past splits.
+        """
         if not splits:
             return candles
         
         adjusted_candles = []
-        cumulative_adjustment = 1.0
         
-        # Sort splits by date (newest first) for reverse adjustment
-        splits_by_date = sorted(splits, key=lambda x: x['split_date'], reverse=True)
+        # Sort splits by date (oldest first) for proper cumulative calculation
+        splits_by_date = sorted(splits, key=lambda x: x['split_date'])
+        logger.info(f"Applying split adjustments with {len(splits_by_date)} splits: {[s['split_date'] + ':' + str(s['split_ratio']) for s in splits_by_date]}")
         
         for candle in candles:
             candle_date = datetime.fromisoformat(candle['timestamp']).date()
             
-            # Calculate cumulative adjustment for this candle date
-            adjustment = 1.0
+            # Calculate cumulative split adjustment factor for dates AFTER this candle
+            cumulative_split_factor = 1.0
             for split in splits_by_date:
                 split_date = datetime.fromisoformat(split['split_date']).date()
-                if candle_date < split_date:
-                    adjustment *= split['split_ratio']
+                if method == "backward":
+                    # divide by splits that happened AFTER the candle date (strictly after)
+                    if candle_date < split_date:
+                        cumulative_split_factor *= split['split_ratio']
+                else:  # forward
+                    # divide by splits that happened BEFORE the candle date (strictly before)
+                    if candle_date > split_date:
+                        cumulative_split_factor *= split['split_ratio']
             
-            # Apply adjustment to prices (divide) and volume (multiply)
+            # Apply backward adjustment: divide prices by cumulative factor, multiply volume
             adjusted_candle = candle.copy()
-            if adjustment != 1.0:
-                adjusted_candle['open'] = candle['open'] / adjustment
-                adjusted_candle['high'] = candle['high'] / adjustment
-                adjusted_candle['low'] = candle['low'] / adjustment
-                adjusted_candle['close'] = candle['close'] / adjustment
-                adjusted_candle['volume'] = int(candle['volume'] * adjustment)
+            if cumulative_split_factor != 1.0:
+                # For backward adjustment multiply prices so pre-split prices align with post-split scale
+                if method == "backward":
+                    adjusted_candle['open']  = candle['open']  * cumulative_split_factor
+                    adjusted_candle['high']  = candle['high']  * cumulative_split_factor
+                    adjusted_candle['low']   = candle['low']   * cumulative_split_factor
+                    adjusted_candle['close'] = candle['close'] * cumulative_split_factor
+                    # Keep original volume for clarity (optional: adjust if needed)
+                    adjusted_candle['volume'] = candle['volume']
+                else:  # forward adjustment (divide prices)
+                    adjusted_candle['open']  = candle['open']  / cumulative_split_factor
+                    adjusted_candle['high']  = candle['high']  / cumulative_split_factor
+                    adjusted_candle['low']   = candle['low']   / cumulative_split_factor
+                    adjusted_candle['close'] = candle['close'] / cumulative_split_factor
+                    # Keep original volume for clarity (optional: adjust if needed)
+                    adjusted_candle['volume'] = candle['volume']
+                # Debug logging for sample dates
+                if candle_date.strftime('%Y-%m-%d') in ['2025-02-04', '2025-02-05']:
+                    logger.info(
+                        f"{method.capitalize()} adjust {candle_date}: close {candle['close']} -> {adjusted_candle['close']} (factor={cumulative_split_factor})")
             
             adjusted_candles.append(adjusted_candle)
         
@@ -591,8 +617,8 @@ async def get_historical_data(
                 "volume": int(row["volume"]) if row["volume"] else 0
             })
         
-        # Apply split adjustments if requested
-        if adjust_for_splits and candles:
+        # Apply split adjustments if requested and not 'none'
+        if adjust_for_splits and candles and adjust_method.lower() != "none":
             # Get split events for this symbol
             splits_query = """
                 SELECT split_date, split_ratio 
@@ -608,9 +634,14 @@ async def get_historical_data(
                 }
                 for row in split_rows
             ]
-            
             if splits:
-                candles = await apply_split_adjustments(candles, splits)
+                method = "backward" if adjust_method.lower() != "forward" else "forward"
+                candles = await apply_split_adjustments(candles, splits, method)
+        
+        # Add cache-busting headers to prevent browser caching of historical data
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         
         return candles
 
@@ -646,7 +677,8 @@ async def proxy_backtest(
             "symbol": symbol,
             "strategy": strategy,
             "start": start,
-            "end": end
+            "end": end,
+            "adjust_method": "none"  # Use raw prices for backtest
         }
         
         async with httpx.AsyncClient() as client:

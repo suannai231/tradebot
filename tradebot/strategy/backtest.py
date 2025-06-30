@@ -106,7 +106,8 @@ class BacktestEngine:
         if self.pool:
             await self.pool.close()
     
-    async def get_historical_data(self, symbol: str, start_date: datetime, end_date: datetime) -> List[PriceTick]:
+    async def get_historical_data(self, symbol: str, start_date: datetime, end_date: datetime,
+                                  adjust_method: str = "none") -> List[PriceTick]:
         """Fetch historical price data from database."""
         if not self.pool:
             raise RuntimeError("Database not connected")
@@ -119,11 +120,27 @@ class BacktestEngine:
                 ORDER BY timestamp ASC
             """, symbol, start_date, end_date)
         
+        # fetch splits if needed
+        splits = None
+        if adjust_method != "none":
+            async with self.pool.acquire() as conn:
+                split_rows = await conn.fetch("SELECT split_date, split_ratio FROM stock_splits WHERE symbol=$1 ORDER BY split_date ASC", symbol)
+            splits = [{"date": r["split_date"].date(), "ratio": float(r["split_ratio"])} for r in split_rows]
+
         ticks = []
         for row in rows:
+            price_val = float(row['price'])
+            if splits and adjust_method == "forward":
+                factor = 1.0
+                candle_date = row['timestamp'].date()
+                for s in splits:
+                    if candle_date >= s['date']:
+                        factor *= s['ratio']
+                price_val = price_val / factor if factor != 1.0 else price_val
+
             tick = PriceTick(
                 symbol=row['symbol'],
-                price=float(row['price']),
+                price=price_val,
                 timestamp=row['timestamp'],
                 open=float(row['open_price']) if row['open_price'] else None,
                 high=float(row['high_price']) if row['high_price'] else None,
@@ -225,14 +242,15 @@ class BacktestEngine:
                           symbol: str,
                           start_date: datetime,
                           end_date: datetime,
-                          strategy_params: Dict[str, Any] = None) -> BacktestResult:
+                          strategy_params: Dict[str, Any] = None,
+                          adjust_method: str = "forward") -> BacktestResult:
         """Run a backtest for a specific strategy and symbol."""
         
         # Create strategy instance
         strategy = create_strategy(strategy_type, **(strategy_params or {}))
         
         # Get historical data
-        ticks = await self.get_historical_data(symbol, start_date, end_date)
+        ticks = await self.get_historical_data(symbol, start_date, end_date, adjust_method)
         if not ticks:
             raise ValueError(f"No historical data found for {symbol} between {start_date} and {end_date}")
         

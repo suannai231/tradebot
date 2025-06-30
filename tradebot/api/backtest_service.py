@@ -26,7 +26,8 @@ async def run_backtest(
     symbol: str,
     strategy: str = Query("mean_reversion"),
     start: str = Query(..., description="YYYY-MM-DD"),
-    end: str = Query(..., description="YYYY-MM-DD")):
+    end: str = Query(..., description="YYYY-MM-DD"),
+    adjust_method: str = Query("forward", description="split adjustment: forward/backward/none")):
     """Run a quick back-test and return summary metrics."""
     try:
         start_dt = datetime.fromisoformat(start)
@@ -38,7 +39,7 @@ async def run_backtest(
         raise HTTPException(status_code=400, detail="start must be before end")
     engine = await _get_engine()
     try:
-        result: BacktestResult = await engine.run_backtest(strategy.lower(), symbol.upper(), start_dt, end_dt)
+        result: BacktestResult = await engine.run_backtest(strategy.lower(), symbol.upper(), start_dt, end_dt, adjust_method=adjust_method)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

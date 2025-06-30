@@ -571,7 +571,9 @@ document.addEventListener('DOMContentLoaded', () => {
   btn.addEventListener('click', async () => {
       console.log('Backtest button clicked!');
       const sym = document.getElementById('bt-symbol').value.trim().toUpperCase();
-      const strat = document.getElementById('bt-strategy').value;
+      const stratEl = document.getElementById('bt-strategy');
+      // Fallback to 'mean_reversion' if single-strategy dropdown is not present
+      const strat = stratEl ? stratEl.value : 'mean_reversion';
       const startRaw = document.getElementById('bt-start').value;
       const endRaw = document.getElementById('bt-end').value;
       console.log('Backtest inputs:', { sym, strat, startRaw, endRaw });
@@ -581,13 +583,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const end   = new Date(endRaw).toISOString().slice(0,10);
       const out = document.getElementById('bt-result');
       if (!sym || !start || !end) {
-          out.textContent = 'Please enter symbol, start and end dates.';
+          if (out) out.textContent = 'Please enter symbol, start and end dates.';
           return;
       }
-      out.textContent = 'Running back-test…';
+      if (out) out.textContent = 'Running back-test…';
       try {
           console.log('Making backtest API call...');
-          const resp = await fetch(`/api/backtest?symbol=${sym}&strategy=${strat}&start=${start}&end=${end}`);
+          const resp = await fetch(`/api/backtest?symbol=${sym}&strategy=${strat}&start=${start}&end=${end}&adjust_method=none`);
           console.log('Backtest response:', resp);
           if (!resp.ok) {
               const txt = await resp.text();
@@ -595,10 +597,10 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           const data = await resp.json();
           console.log('Backtest data:', data);
-          out.textContent = `${sym} ${strat}\nReturn: ${data.total_return_pct.toFixed(2)}%\nTrades: ${data.total_trades}\nWin-rate: ${data.win_rate.toFixed(1)}%\nSharpe: ${data.sharpe_ratio.toFixed(2)}`;
+          if (out) out.textContent = `${sym} ${strat}\nReturn: ${data.total_return_pct.toFixed(2)}%\nTrades: ${data.total_trades}\nWin-rate: ${data.win_rate.toFixed(1)}%\nSharpe: ${data.sharpe_ratio.toFixed(2)}`;
       } catch (e) {
           console.error('Backtest error:', e);
-          out.textContent = 'Error: ' + (e.message || e);
+          if (out) out.textContent = 'Error: ' + (e.message || e);
       }
   });
   console.log('Backtest button event listener added');

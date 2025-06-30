@@ -43,6 +43,7 @@ class KLineChart {
         this.isDragging = false;
         this.lastX = 0;
         this.crosshair = { x: null, y: null, active: false };
+        this.priceAdjustmentMethod = null;
         
         this.init();
     }
@@ -243,7 +244,13 @@ class KLineChart {
                 if (yScale) {
                     const price = yScale.getValueForPixel(y);
                     if (typeof price === 'number' && isFinite(price)) {
-                        priceAtCursor = price.toFixed(2);
+                        // Dynamically adjust decimal precision so very small prices are not rounded to 0.00
+                        const absPrice = Math.abs(price);
+                        let decimals = 2;
+                        if (absPrice < 1) {
+                            decimals = absPrice >= 0.1 ? 3 : absPrice >= 0.01 ? 4 : 6;
+                        }
+                        priceAtCursor = price.toFixed(decimals);
                         // Find first visible candle for percent calculation
                         let base = null;
                         if (data && data.length > 0 && xScale) {
@@ -522,7 +529,14 @@ class KLineChart {
                         },
                         ticks: {
                             maxTicksLimit: 8,
-                            padding: 8
+                            padding: 8,
+                            callback: function(value) {
+                                const absVal = Math.abs(value);
+                                if (absVal >= 1) return value.toFixed(2);
+                                if (absVal >= 0.1) return value.toFixed(3);
+                                if (absVal >= 0.01) return value.toFixed(4);
+                                return value.toFixed(6);
+                            }
                         }
                     },
                     yPercent: {
@@ -558,10 +572,10 @@ class KLineChart {
                                     return `Volume: ${dataPoint.v ? dataPoint.v.toLocaleString() : context.parsed.y.toLocaleString()}`;
                                 }
                                 return [
-                                    `Open: $${dataPoint.o.toFixed(2)}`,
-                                    `High: $${dataPoint.h.toFixed(2)}`,
-                                    `Low: $${dataPoint.l.toFixed(2)}`,
-                                    `Close: $${dataPoint.c.toFixed(2)}`,
+                                    (() => { const p = dataPoint.o; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `Open: $${p.toFixed(dec)}`; })(),
+                                    (() => { const p = dataPoint.h; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `High: $${p.toFixed(dec)}`; })(),
+                                    (() => { const p = dataPoint.l; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `Low: $${p.toFixed(dec)}`; })(),
+                                    (() => { const p = dataPoint.c; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `Close: $${p.toFixed(dec)}`; })(),
                                     `Change: ${dataPoint.percent !== undefined ? dataPoint.percent.toFixed(2) + '%' : ''}`,
                                     `Volume: ${dataPoint.v.toLocaleString()}`
                                 ];
@@ -907,6 +921,76 @@ class KLineChart {
             if (this.chart) this.chart.draw();
             if (this.volumeChart) this.volumeChart.draw();
         });
+
+        // Add context menu for price adjustment
+        this.createPriceAdjustmentMenu(canvas);
+    }
+
+    createPriceAdjustmentMenu(canvas) {
+        // Create main menu element
+        let menu = document.createElement('div');
+        menu.id = 'price-adjustment-menu';
+        menu.style.position = 'absolute';
+        menu.style.display = 'none';
+        menu.style.zIndex = 1000;
+        menu.style.background = '#23272e';
+        menu.style.border = '1px solid #444';
+        menu.style.borderRadius = '6px';
+        menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+        menu.style.padding = '4px 0';
+        menu.style.minWidth = '180px';
+        menu.style.fontFamily = 'inherit';
+        menu.style.color = '#fff';
+        menu.innerHTML = `
+            <div class="menu-item has-submenu" style="padding: 8px 16px; cursor: pointer; position: relative;">
+                Price Adjustment <span style="float:right;">&#9654;</span>
+                <div class="submenu" style="display:none; position:absolute; left:100%; top:0; background:#23272e; border:1px solid #444; border-radius:6px; min-width:180px; box-shadow:0 2px 8px rgba(0,0,0,0.2);">
+                    <div class="menu-item" data-method="backward" style="padding: 8px 16px; cursor: pointer;">Backward Adjusted</div>
+                    <div class="menu-item" data-method="none" style="padding: 8px 16px; cursor: pointer;">Unadjusted</div>
+                    <div class="menu-item" data-method="forward" style="padding: 8px 16px; cursor: pointer;">Forward Adjusted</div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(menu);
+
+        // Hide menu on click elsewhere
+        document.addEventListener('click', () => { menu.style.display = 'none'; });
+        // Prevent default context menu and show custom menu
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            menu.style.display = 'block';
+            menu.style.left = e.pageX + 'px';
+            menu.style.top = e.pageY + 'px';
+        });
+        // Submenu show/hide logic
+        const parentItem = menu.querySelector('.has-submenu');
+        const submenu = parentItem.querySelector('.submenu');
+        parentItem.addEventListener('mouseenter', () => {
+            submenu.style.display = 'block';
+        });
+        parentItem.addEventListener('mouseleave', () => {
+            submenu.style.display = 'none';
+        });
+        submenu.addEventListener('mouseenter', () => {
+            submenu.style.display = 'block';
+        });
+        submenu.addEventListener('mouseleave', () => {
+            submenu.style.display = 'none';
+        });
+        // Handle submenu item click
+        submenu.querySelectorAll('.menu-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                const method = item.getAttribute('data-method');
+                menu.style.display = 'none';
+                this.setPriceAdjustmentMethod(method);
+            });
+        });
+    }
+
+    setPriceAdjustmentMethod(method) {
+        // Store the selected method and reload chart data
+        this.priceAdjustmentMethod = method;
+        this.loadChartData();
     }
 
     // Filter out non-trading dates (weekends and holidays)
@@ -958,10 +1042,22 @@ class KLineChart {
         };
         clearOverlays();
         try {
-            // Fetch split-adjusted data for smooth chart display
-            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0&adjust_for_splits=true`);
+            // Fetch split-adjusted data for smooth chart display with aggressive cache-busting
+            const cacheBuster = Date.now() + Math.random();
+            const adjustMethod = this.priceAdjustmentMethod || 'backward';
+            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0&adjust_for_splits=true&adjust_method=${adjustMethod}&_t=${cacheBuster}`, {
+                cache: 'no-cache',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            });
             const data = await response.json();
             console.log('K-line API data:', data); // DEBUG
+            
+            // Debug: Check a few sample data points for split adjustment
+            const feb2025Data = data.filter(d => d.timestamp.startsWith('2025-02-0')).slice(0, 5);
+            console.log('February 2025 sample data (should be split-adjusted):', feb2025Data);
             if (data.length === 0) {
                 this.showNoDataMessage();
                 return;
