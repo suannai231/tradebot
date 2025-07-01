@@ -83,6 +83,19 @@ class BacktestResult:
             'avg_loss': self.avg_loss,
             'profit_factor': self.profit_factor
         }
+        # Add trades (serialized) for optional visualization
+        d['trades'] = [
+            {
+                'entry_time': t.entry_time.isoformat() if t.entry_time else None,
+                'exit_time': t.exit_time.isoformat() if t.exit_time else None,
+                'entry_price': t.entry_price,
+                'exit_price': t.exit_price,
+                'side': t.side.value if hasattr(t.side, 'value') else str(t.side),
+                'return_pct': t.return_pct
+            }
+            for t in self.trades
+        ]
+        
         # replace inf / nan with None so JSON is valid
         for k, v in d.items():
             if isinstance(v, float) and (math.isinf(v) or math.isnan(v)):
@@ -125,7 +138,13 @@ class BacktestEngine:
         if adjust_method != "none":
             async with self.pool.acquire() as conn:
                 split_rows = await conn.fetch("SELECT split_date, split_ratio FROM stock_splits WHERE symbol=$1 ORDER BY split_date ASC", symbol)
-            splits = [{"date": r["split_date"].date(), "ratio": float(r["split_ratio"])} for r in split_rows]
+            splits = []
+            for r in split_rows:
+                s_date = r["split_date"]
+                # The column may come back as `datetime.date` or `datetime.datetime`
+                if isinstance(s_date, datetime):
+                    s_date = s_date.date()
+                splits.append({"date": s_date, "ratio": float(r["split_ratio"])})
 
         ticks = []
         for row in rows:
@@ -137,15 +156,49 @@ class BacktestEngine:
                     if candle_date >= s['date']:
                         factor *= s['ratio']
                 price_val = price_val / factor if factor != 1.0 else price_val
+            elif splits and adjust_method == "backward":
+                factor = 1.0
+                candle_date = row['timestamp'].date()
+                for s in splits:
+                    if candle_date < s['date']:
+                        factor *= s['ratio']
+                price_val = price_val * factor if factor != 1.0 else price_val
+
+            adj_open = float(row['open_price']) if row['open_price'] else None
+            adj_high = float(row['high_price']) if row['high_price'] else None
+            adj_low  = float(row['low_price']) if row['low_price'] else None
+            adj_close= float(row['close_price']) if row['close_price'] else None
+
+            if splits and adjust_method != "none":
+                if adjust_method == "forward":
+                    if factor != 1.0:
+                        if adj_open is not None:
+                            adj_open /= factor
+                        if adj_high is not None:
+                            adj_high /= factor
+                        if adj_low is not None:
+                            adj_low /= factor
+                        if adj_close is not None:
+                            adj_close /= factor
+                elif adjust_method == "backward":
+                    if factor != 1.0:
+                        if adj_open is not None:
+                            adj_open *= factor
+                        if adj_high is not None:
+                            adj_high *= factor
+                        if adj_low is not None:
+                            adj_low *= factor
+                        if adj_close is not None:
+                            adj_close *= factor
 
             tick = PriceTick(
                 symbol=row['symbol'],
                 price=price_val,
                 timestamp=row['timestamp'],
-                open=float(row['open_price']) if row['open_price'] else None,
-                high=float(row['high_price']) if row['high_price'] else None,
-                low=float(row['low_price']) if row['low_price'] else None,
-                close=float(row['close_price']) if row['close_price'] else None,
+                open=adj_open,
+                high=adj_high,
+                low=adj_low,
+                close=adj_close,
                 volume=row['volume'] if row['volume'] else None,
                 trade_count=row['trade_count'] if row['trade_count'] else None,
                 vwap=float(row['vwap']) if row['vwap'] else None

@@ -678,7 +678,7 @@ async def proxy_backtest(
             "strategy": strategy,
             "start": start,
             "end": end,
-            "adjust_method": "none"  # Use raw prices for backtest
+            "adjust_method": "backward"  # Use backward-adjusted prices for realistic returns
         }
         
         async with httpx.AsyncClient() as client:

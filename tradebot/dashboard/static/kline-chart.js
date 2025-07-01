@@ -21,6 +21,24 @@ if (window.ChartZoom) {
     console.warn('ChartZoom plugin not found on window');
 }
 
+// ---- Global tooltip safeguard to avoid toFixed on undefined ----
+if (Chart && Chart.defaults && Chart.defaults.plugins && Chart.defaults.plugins.tooltip) {
+    const origLabel = Chart.defaults.plugins.tooltip.callbacks.label;
+    Chart.defaults.plugins.tooltip.callbacks.label = function(ctx) {
+        try {
+            if (ctx.dataset && ctx.dataset.id === 'trades') {
+                // use the custom marker label (origLabel is our scatter callback)
+                return typeof origLabel === 'function' ? origLabel(ctx) : '';
+            }
+            const p = ctx.raw;
+            if (!p || typeof p.y !== 'number' || !isFinite(p.y)) return '';
+            return Number(p.y).toFixed(2);
+        } catch(e) {
+            return '';
+        }
+    };
+}
+
 // Fallback pan method for when zoom plugin is not available
 Chart.prototype.fallbackPan = function(deltaX) {
     const xScale = this.scales.x;
@@ -44,12 +62,31 @@ class KLineChart {
         this.lastX = 0;
         this.crosshair = { x: null, y: null, active: false };
         this.priceAdjustmentMethod = null;
+        // Use the same strategies list defined for back-test (global ALL_STRATEGIES)
+        this.strategyList = Array.isArray(window.ALL_STRATEGIES) && window.ALL_STRATEGIES.length > 0
+            ? window.ALL_STRATEGIES.slice() // clone
+            : [
+                'mean_reversion',
+                'simple_ma',
+                'advanced',
+                'low_volume',
+                'momentum_breakout',
+                'volatility_mean_reversion',
+                'gap_trading',
+                'multi_timeframe',
+                'risk_managed',
+                'aggressive_mean_reversion',
+                'enhanced_momentum',
+                'multi_timeframe_momentum'
+            ];
+        this.currentStrategy = localStorage.getItem('kline_last_strategy') || null;
         
         this.init();
     }
 
     init() {
         this.setupEventListeners();
+        this.injectStrategyDropdown();
         this.loadAvailableSymbols();
         this.setupChart();
         this.setupMouseDragPan(); // Enable mouse drag panning
@@ -86,6 +123,158 @@ class KLineChart {
                 loadBtn.click();
             }
         });
+    }
+
+    injectStrategyDropdown() {
+        const container = document.getElementById('kline-controls') || document.body;
+        let select = document.createElement('select');
+        select.id = 'kline-strategy-select';
+        select.className = 'form-select form-select-sm';
+        let defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.text = 'Show Trades (strategy…)';
+        select.appendChild(defaultOpt);
+        this.strategyList.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s;
+            const display = (window.STRATEGY_NAMES && window.STRATEGY_NAMES[s]) ? window.STRATEGY_NAMES[s] : s.replace(/_/g,' ');
+            opt.text = display;
+            select.appendChild(opt);
+        });
+        // Preselect if saved
+        if (this.currentStrategy) {
+            select.value = this.currentStrategy;
+        }
+        select.addEventListener('change', () => {
+            const val = select.value;
+            if (val) {
+                this.currentStrategy = val;
+                localStorage.setItem('kline_last_strategy', val);
+                this.loadTradesForStrategy();
+            } else {
+                this.currentStrategy = null;
+                localStorage.removeItem('kline_last_strategy');
+                this.removeTradeMarkers();
+            }
+        });
+        container.prepend(select);
+    }
+
+    removeTradeMarkers() {
+        // Remove any dataset with id === 'trades' or 'tradeLines'
+        if (!this.chart) return;
+        this.chart.data.datasets = this.chart.data.datasets.filter(ds => ds.id !== 'trades' && ds.id !== 'tradeLines');
+        this.chart.update();
+    }
+
+    async loadTradesForStrategy() {
+        if (!this.currentSymbol || !this.currentStrategy || !this.chart) return;
+        // Determine visible date range
+        const xScale = this.chart.scales.x;
+        const startDate = new Date(xScale.min).toISOString().slice(0,10);
+        const endDate   = new Date(xScale.max).toISOString().slice(0,10);
+        const adjustMethod = this.priceAdjustmentMethod || 'backward';
+        const url = `/api/backtest?symbol=${this.currentSymbol}&strategy=${this.currentStrategy}&start=${startDate}&end=${endDate}&adjust_method=${adjustMethod}`;
+        try {
+            const resp = await fetch(url);
+            const data = await resp.json();
+            if (!data.trades || data.trades.length === 0) {
+                this.removeTradeMarkers();
+                return;
+            }
+            const points = [];
+            // Map candles by timestamp (ms) for quick lookup
+            const candleMap = {};
+            if (this.chart && this.chart.data && this.chart.data.datasets.length) {
+                this.chart.data.datasets[0].data.forEach(c => { candleMap[c.x] = c; });
+            }
+
+            const tsToMs = d => new Date(d).getTime();
+
+            data.trades.forEach(tr => {
+                const entryTs = tsToMs(tr.entry_time);
+                const entryCandle = candleMap[entryTs];
+                const entryY = entryCandle ? entryCandle.l : tr.entry_price;
+                points.push({ x: entryTs, y: entryY, _type: 'entry', _trade: tr, _candle: entryCandle });
+
+                if (tr.exit_time && tr.exit_price !== null) {
+                    const exitTs = tsToMs(tr.exit_time);
+                    const exitCandle = candleMap[exitTs];
+                    const exitY = exitCandle ? exitCandle.h : tr.exit_price;
+                    points.push({ x: exitTs, y: exitY, _type: 'exit', _trade: tr, _candle: exitCandle });
+                }
+            });
+            // Configure styles per point
+            const bgColors = points.map(p => p._type === 'entry' ? 'lime' : 'red');
+            const shapes   = points.map(p => p._type === 'entry' ? 'triangle' : 'rectRot');
+            // Remove old
+            this.removeTradeMarkers();
+            // Add scatter dataset
+            this.chart.data.datasets.push({
+                id: 'trades',
+                type: 'scatter',
+                label: `Trades ${this.currentStrategy}`,
+                data: points,
+                backgroundColor: bgColors,
+                pointRadius: 6,
+                pointStyle: shapes,
+                parsing: false,
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => {
+                            const p = ctx.raw;
+                            if (!p || typeof p.y !== 'number' || !isFinite(p.y)) return '';
+                            const candle = p._candle;
+                            const trade  = p._trade;
+                            const dir = p._type === 'entry' ? 'Entry' : 'Exit';
+                            const lines = [];
+                            if (candle) {
+                                const fmt=(v)=>v!==undefined?`$${v.toFixed(2)}`:'—';
+                                lines.push(`Open:  ${fmt(candle.o)}`);
+                                lines.push(`High:  ${fmt(candle.h)}`);
+                                lines.push(`Low:   ${fmt(candle.l)}`);
+                                lines.push(`Close: ${fmt(candle.c)}`);
+                            }
+                            let base = `${dir} @ $${p.y.toFixed(2)}`;
+                            if (trade && typeof trade.return_pct === 'number' && isFinite(trade.return_pct)) {
+                                base += `  P/L ${trade.return_pct.toFixed(1)}%`;
+                            }
+                            lines.push(base);
+                            return lines;
+                        }
+                    }
+                },
+                yAxisID: 'y',
+                order: 0
+            });
+
+            // create separate small line dataset per trade
+            data.trades.forEach(tr=>{
+                if (tr.exit_time && tr.exit_price !== null){
+                    const entryTs = tsToMs(tr.entry_time);
+                    const exitTs  = tsToMs(tr.exit_time);
+                    const entryC = candleMap[entryTs];
+                    const exitC  = candleMap[exitTs];
+                    const entryY = entryC ? entryC.l : tr.entry_price;
+                    const exitY  = exitC  ? exitC.h  : tr.exit_price;
+                    this.chart.data.datasets.push({
+                        id:'tradeLines',
+                        type:'line',
+                        data:[{x:entryTs,y:entryY},{x:exitTs,y:exitY}],
+                        borderColor:'#888',
+                        borderWidth:1,
+                        pointRadius:0,
+                        yAxisID:'y',
+                        order:-1,
+                        spanGaps:false
+                    });
+                }
+            });
+
+            this.chart.update();
+        } catch(err) {
+            console.error('Failed to load trades', err);
+        }
     }
 
     async loadAvailableSymbols() {
@@ -480,7 +669,7 @@ class KLineChart {
                 },
                 interaction: {
                     intersect: false,
-                    mode: 'index'
+                    mode: 'nearest'
                 },
                 scales: {
                     x: {
@@ -568,16 +757,15 @@ class KLineChart {
                             },
                             label: function(context) {
                                 const dataPoint = context.raw;
-                                if (context.dataset.label === 'Volume') {
-                                    return `Volume: ${dataPoint.v ? dataPoint.v.toLocaleString() : context.parsed.y.toLocaleString()}`;
-                                }
+                                if (dataPoint.o === undefined) return ''; // skip non-candle items
+                                const fmt = (v) => (typeof v === 'number' && isFinite(v)) ? v.toFixed(2) : '—';
                                 return [
-                                    (() => { const p = dataPoint.o; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `Open: $${p.toFixed(dec)}`; })(),
-                                    (() => { const p = dataPoint.h; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `High: $${p.toFixed(dec)}`; })(),
-                                    (() => { const p = dataPoint.l; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `Low: $${p.toFixed(dec)}`; })(),
-                                    (() => { const p = dataPoint.c; const absP = Math.abs(p); const dec = absP < 1 ? (absP >= 0.1 ? 3 : absP >= 0.01 ? 4 : 6) : 2; return `Close: $${p.toFixed(dec)}`; })(),
-                                    `Change: ${dataPoint.percent !== undefined ? dataPoint.percent.toFixed(2) + '%' : ''}`,
-                                    `Volume: ${dataPoint.v.toLocaleString()}`
+                                    `Open:  $${fmt(dataPoint.o)}`,
+                                    `High:  $${fmt(dataPoint.h)}`,
+                                    `Low:   $${fmt(dataPoint.l)}`,
+                                    `Close: $${fmt(dataPoint.c)}`,
+                                    `Change: ${typeof dataPoint.percent === 'number' && isFinite(dataPoint.percent) ? dataPoint.percent.toFixed(2) + '%' : ''}`,
+                                    `Volume: ${dataPoint.v ? dataPoint.v.toLocaleString() : ''}`
                                 ];
                             }
                         }
@@ -924,6 +1112,14 @@ class KLineChart {
 
         // Add context menu for price adjustment
         this.createPriceAdjustmentMenu(canvas);
+
+        // After global tooltip override, add filter
+        Chart.defaults.plugins.tooltip.filter = function(ctx) {
+            // Exclude items whose parsed.y is not a finite number
+            if (typeof ctx.parsed.y !== 'number' || !isFinite(ctx.parsed.y)) return false;
+            // When hovering markers ensure only one item shown: allow trades dataset; if dataset id isn't 'trades' ensure parsed object has o property (candlestick)
+            return true;
+        };
     }
 
     createPriceAdjustmentMenu(canvas) {
@@ -1130,6 +1326,27 @@ class KLineChart {
             this.volumeChart.data.datasets[0].backgroundColor = volBg;
             this.volumeChart.data.datasets[0].borderColor = volBorder;
             this.volumeChart.update();
+
+            // ----- Sync Strategy Comparison Back-test -----
+            try {
+                const btSymbolInput = document.getElementById('bt-symbol');
+                if (btSymbolInput) {
+                    btSymbolInput.value = this.currentSymbol;
+                }
+                if (typeof window.runAllStrategiesBacktest === 'function') {
+                    // call asynchronously so UI stays responsive
+                    setTimeout(() => {
+                        window.runAllStrategiesBacktest();
+                    }, 0);
+                }
+            } catch (syncErr) {
+                console.warn('Failed to trigger back-test sync:', syncErr);
+            }
+
+            // If a strategy is already selected (cached), plot its trades automatically
+            if (this.currentStrategy) {
+                this.loadTradesForStrategy();
+            }
 
             // Remove any leftover overlay now that we have data
             clearOverlays();
