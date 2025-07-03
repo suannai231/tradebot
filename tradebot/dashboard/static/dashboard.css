@@ -423,3 +423,155 @@ body {
         flex: 1;
     }
 }
+
+/* ML Strategy specific styles */
+.ml-strategy-badge {
+    background: linear-gradient(45deg, #007bff, #6610f2);
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+.ml-performance-card {
+    border-left: 4px solid #007bff;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+.ml-performance-card .card-header {
+    background: linear-gradient(135deg, #007bff 0%, #6610f2 100%);
+    color: white;
+}
+
+.ml-strategy-row {
+    background-color: rgba(0, 123, 255, 0.05);
+    border-left: 3px solid #007bff;
+}
+
+.ml-strategy-row:hover {
+    background-color: rgba(0, 123, 255, 0.1);
+}
+
+.strategy-category-header {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    color: #495057;
+    border-bottom: 2px solid #dee2e6;
+}
+
+.custom-strategy-selection {
+    border: 2px solid #17a2b8;
+    border-radius: 8px;
+    background-color: rgba(23, 162, 184, 0.05);
+}
+
+.custom-strategy-selection .card-header {
+    background-color: #17a2b8;
+    color: white;
+}
+
+.form-check-input:checked {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.form-check-input:checked + .form-check-label {
+    color: #007bff;
+    font-weight: 600;
+}
+
+/* ML Performance Chart */
+#ml-performance-chart {
+    background-color: white;
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Strategy selector styling */
+#bt-strategy-selector {
+    border: 2px solid #dee2e6;
+    border-radius: 6px;
+    transition: border-color 0.15s ease-in-out;
+}
+
+#bt-strategy-selector:focus {
+    border-color: #007bff;
+    box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+/* ML strategy indicators */
+.badge.bg-info {
+    background: linear-gradient(45deg, #17a2b8, #20c997) !important;
+    font-size: 0.7rem;
+    padding: 0.25rem 0.5rem;
+}
+
+/* Performance metrics */
+.performance-metric {
+    text-align: center;
+    padding: 15px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+
+.performance-metric.positive {
+    background: linear-gradient(135deg, rgba(40, 167, 69, 0.1), rgba(40, 167, 69, 0.05));
+    border-left: 4px solid #28a745;
+}
+
+.performance-metric.negative {
+    background: linear-gradient(135deg, rgba(220, 53, 69, 0.1), rgba(220, 53, 69, 0.05));
+    border-left: 4px solid #dc3545;
+}
+
+.performance-metric.neutral {
+    background: linear-gradient(135deg, rgba(108, 117, 125, 0.1), rgba(108, 117, 125, 0.05));
+    border-left: 4px solid #6c757d;
+}
+
+/* Training status indicators */
+.training-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.training-status.trained {
+    background-color: rgba(40, 167, 69, 0.1);
+    color: #28a745;
+}
+
+.training-status.training {
+    background-color: rgba(255, 193, 7, 0.1);
+    color: #ffc107;
+}
+
+.training-status.failed {
+    background-color: rgba(220, 53, 69, 0.1);
+    color: #dc3545;
+}
+
+/* Responsive adjustments for ML section */
+@media (max-width: 768px) {
+    .custom-strategy-selection .card-body {
+        padding: 10px;
+    }
+    
+    .custom-strategy-selection .row {
+        margin: 0;
+    }
+    
+    .custom-strategy-selection .col-md-6 {
+        padding: 5px;
+    }
+    
+    #ml-performance-chart {
+        height: 300px !important;
+    }
+}

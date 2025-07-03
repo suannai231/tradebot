@@ -316,7 +316,13 @@ class BacktestEngine:
         # Process each tick
         for tick in ticks:
             # Generate signal from strategy
-            signal = strategy.on_tick(tick)
+            on_tick = getattr(strategy, 'on_tick', None)
+            if on_tick is None:
+                continue
+            if asyncio.iscoroutinefunction(on_tick):
+                signal = await on_tick(tick)
+            else:
+                signal = on_tick(tick)
             
             if signal:
                 if signal.side == Side.buy and current_position is None:

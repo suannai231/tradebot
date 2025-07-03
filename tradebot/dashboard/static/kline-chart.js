@@ -1251,8 +1251,15 @@ class KLineChart {
             const data = await response.json();
             console.log('K-line API data:', data); // DEBUG
             
+            // Check if response is an error
+            if (!response.ok || data.detail || !Array.isArray(data)) {
+                console.error('API error:', data);
+                this.showErrorMessage(data.detail || 'Failed to load chart data');
+                return;
+            }
+            
             // Debug: Check a few sample data points for split adjustment
-            const feb2025Data = data.filter(d => d.timestamp.startsWith('2025-02-0')).slice(0, 5);
+            const feb2025Data = data.filter(d => d.timestamp && d.timestamp.startsWith('2025-02-0')).slice(0, 5);
             console.log('February 2025 sample data (should be split-adjusted):', feb2025Data);
             if (data.length === 0) {
                 this.showNoDataMessage();

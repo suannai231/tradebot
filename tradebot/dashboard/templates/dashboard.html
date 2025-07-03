@@ -201,14 +201,61 @@
                         <h5 class="mb-0"><i class="fas fa-play"></i> Strategy Comparison Back-test</h5>
                     </div>
                     <div class="card-body">
-                        <div class="row g-2 align-items-end">
-                            <div class="col-sm-3"><input id="bt-symbol" type="text" class="form-control form-control-sm" placeholder="Enter Symbol (e.g., AAPL)" /></div>
-                            <div class="col-sm-3"><input id="bt-start" type="date" class="form-control form-control-sm" /></div>
-                            <div class="col-sm-3"><input id="bt-end" type="date" class="form-control form-control-sm" /></div>
+                        <div class="row g-2 align-items-end mb-3">
+                            <div class="col-sm-2"><input id="bt-symbol" type="text" class="form-control form-control-sm" placeholder="Enter Symbol (e.g., AAPL)" /></div>
+                            <div class="col-sm-2"><input id="bt-start" type="date" class="form-control form-control-sm" /></div>
+                            <div class="col-sm-2"><input id="bt-end" type="date" class="form-control form-control-sm" /></div>
+                            <div class="col-sm-3">
+                                <select id="bt-strategy-selector" class="form-control form-control-sm">
+                                    <option value="all">All Strategies</option>
+                                    <option value="traditional">Traditional Strategies Only</option>
+                                    <option value="ml">Machine Learning Only</option>
+                                    <option value="custom">Custom Selection</option>
+                                </select>
+                            </div>
                             <div class="col-sm-3">
                                 <button id="bt-run" class="btn btn-primary btn-sm w-100" onclick="runAllStrategiesBacktest()">
-                                    <i class="fas fa-play"></i> Run All Strategies
+                                    <i class="fas fa-play"></i> Run Backtest
                                 </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Custom Strategy Selection (hidden by default) -->
+                        <div id="custom-strategy-selection" class="row mb-3" style="display: none;">
+                            <div class="col-12">
+                                <div class="card border-info">
+                                    <div class="card-header bg-info text-white">
+                                        <h6 class="mb-0"><i class="fas fa-cogs"></i> Select Strategies</h6>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <h6>Traditional Strategies</h6>
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" id="select-all-traditional" checked>
+                                                    <label class="form-check-label" for="select-all-traditional">
+                                                        <strong>Select All Traditional</strong>
+                                                    </label>
+                                                </div>
+                                                <div id="traditional-strategies-list">
+                                                    <!-- Traditional strategies will be populated here -->
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <h6>Machine Learning Strategies</h6>
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" id="select-all-ml" checked>
+                                                    <label class="form-check-label" for="select-all-ml">
+                                                        <strong>Select All ML</strong>
+                                                    </label>
+                                                </div>
+                                                <div id="ml-strategies-list">
+                                                    <!-- ML strategies will be populated here -->
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         
@@ -237,6 +284,45 @@
                         
                         <!-- Loading/Status -->
                         <div id="bt-status" class="mt-3"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ML Strategy Performance -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-robot"></i> Machine Learning Strategy Performance
+                        </h5>
+                        <button class="btn btn-sm btn-outline-primary" onclick="refreshMLPerformance()">
+                            <i class="fas fa-sync-alt"></i> Refresh
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>Strategy Performance Summary</h6>
+                                <div id="ml-performance-summary">
+                                    <div class="text-center text-muted">Loading ML performance data...</div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Model Training Status</h6>
+                                <div id="ml-training-status">
+                                    <div class="text-center text-muted">Loading training status...</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- ML Strategy Metrics Chart -->
+                        <div class="row mt-3">
+                            <div class="col-12">
+                                <canvas id="ml-performance-chart" height="200"></canvas>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -377,40 +463,99 @@
             document.getElementById('bt-end').value = formatDate(today);
         }
 
-        // Set default dates when page loads
-        setDefaultBacktestDates();
+        // Set default dates and initialize strategy selection when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            if (window.setDefaultBacktestDates) {
+                window.setDefaultBacktestDates();
+            }
+            if (window.initializeStrategySelection) {
+                window.initializeStrategySelection();
+            }
+        });
 
-        // All available strategies
-        const ALL_STRATEGIES = [
-            'mean_reversion',
-            'simple_ma', 
-            'advanced',
-            'low_volume',
-            'momentum_breakout',
-            'volatility_mean_reversion',
-            'gap_trading',
-            'multi_timeframe',
-            'risk_managed',
-            'aggressive_mean_reversion',
-            'enhanced_momentum',
-            'multi_timeframe_momentum'
-        ];
+        // Strategy variables are now defined in dashboard.js
 
-        // Strategy display names
-        const STRATEGY_NAMES = {
-            'mean_reversion': 'Mean Reversion',
-            'simple_ma': 'Simple MA',
-            'advanced': 'Advanced',
-            'low_volume': 'Low Volume',
-            'momentum_breakout': 'Momentum Breakout',
-            'volatility_mean_reversion': 'Volatility Mean Reversion',
-            'gap_trading': 'Gap Trading',
-            'multi_timeframe': 'Multi Timeframe',
-            'risk_managed': 'Risk Managed',
-            'aggressive_mean_reversion': 'Aggressive Mean Reversion',
-            'enhanced_momentum': 'Enhanced Momentum',
-            'multi_timeframe_momentum': 'Multi Timeframe Momentum'
-        };
+        // Initialize strategy selection UI
+        function initializeStrategySelection() {
+            // Populate traditional strategies
+            const traditionalList = document.getElementById('traditional-strategies-list');
+            STRATEGY_CATEGORIES['Traditional'].forEach(strategy => {
+                const div = document.createElement('div');
+                div.className = 'form-check';
+                div.innerHTML = `
+                    <input class="form-check-input traditional-strategy-checkbox" type="checkbox" id="check-${strategy}" value="${strategy}" checked>
+                    <label class="form-check-label" for="check-${strategy}">
+                        ${STRATEGY_NAMES[strategy]}
+                    </label>
+                `;
+                traditionalList.appendChild(div);
+            });
+
+            // Populate ML strategies
+            const mlList = document.getElementById('ml-strategies-list');
+            STRATEGY_CATEGORIES['Machine Learning'].forEach(strategy => {
+                const div = document.createElement('div');
+                div.className = 'form-check';
+                div.innerHTML = `
+                    <input class="form-check-input ml-strategy-checkbox" type="checkbox" id="check-${strategy}" value="${strategy}" checked>
+                    <label class="form-check-label" for="check-${strategy}">
+                        ${STRATEGY_NAMES[strategy]}
+                    </label>
+                `;
+                mlList.appendChild(div);
+            });
+
+            // Setup event listeners
+            document.getElementById('bt-strategy-selector').addEventListener('change', function() {
+                const selection = this.value;
+                const customSelection = document.getElementById('custom-strategy-selection');
+                
+                if (selection === 'custom') {
+                    customSelection.style.display = 'block';
+                } else {
+                    customSelection.style.display = 'none';
+                }
+            });
+
+            // Select all traditional strategies
+            document.getElementById('select-all-traditional').addEventListener('change', function() {
+                const checkboxes = document.querySelectorAll('.traditional-strategy-checkbox');
+                checkboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                });
+            });
+
+            // Select all ML strategies
+            document.getElementById('select-all-ml').addEventListener('change', function() {
+                const checkboxes = document.querySelectorAll('.ml-strategy-checkbox');
+                checkboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                });
+            });
+        }
+
+        // Get selected strategies based on current selection
+        function getSelectedStrategies() {
+            const selector = document.getElementById('bt-strategy-selector');
+            const selection = selector.value;
+            
+            switch (selection) {
+                case 'all':
+                    return ALL_STRATEGIES;
+                case 'traditional':
+                    return STRATEGY_CATEGORIES['Traditional'];
+                case 'ml':
+                    return STRATEGY_CATEGORIES['Machine Learning'];
+                case 'custom':
+                    const selectedStrategies = [];
+                    document.querySelectorAll('.traditional-strategy-checkbox:checked, .ml-strategy-checkbox:checked').forEach(checkbox => {
+                        selectedStrategies.push(checkbox.value);
+                    });
+                    return selectedStrategies;
+                default:
+                    return ALL_STRATEGIES;
+            }
+        }
 
         // New function to run all strategies backtest
         window.runAllStrategiesBacktest = async function() {
@@ -425,6 +570,14 @@
                 return;
             }
             
+            // Get selected strategies
+            const selectedStrategies = getSelectedStrategies();
+            
+            if (selectedStrategies.length === 0) {
+                document.getElementById('bt-status').innerHTML = '<div class="alert alert-warning">Please select at least one strategy.</div>';
+                return;
+            }
+            
             // Convert dates to ISO format
             const start = new Date(startRaw).toISOString().slice(0,10);
             const end = new Date(endRaw).toISOString().slice(0,10);
@@ -435,7 +588,7 @@
             const resultsTable = document.getElementById('bt-results-table');
             
             statusDiv.innerHTML = `<div class="alert alert-info">
-                <i class="fas fa-spinner fa-spin"></i> Running backtest for ${sym} across ${ALL_STRATEGIES.length} strategies...
+                <i class="fas fa-spinner fa-spin"></i> Running backtest for ${sym} across ${selectedStrategies.length} strategies...
                 <div class="progress mt-2">
                     <div id="bt-progress" class="progress-bar" role="progressbar" style="width: 0%"></div>
                 </div>
@@ -447,8 +600,8 @@
             const results = [];
             let completedStrategies = 0;
             
-            // Test each strategy
-            for (const strategy of ALL_STRATEGIES) {
+            // Test each selected strategy
+            for (const strategy of selectedStrategies) {
                 try {
                     console.log(`Testing strategy: ${strategy}`);
                     const response = await fetch(`/api/backtest?symbol=${sym}&strategy=${strategy}&start=${start}&end=${end}&adjust_method=forward`);
@@ -481,7 +634,7 @@
                 
                 // Update progress
                 completedStrategies++;
-                const progress = (completedStrategies / ALL_STRATEGIES.length) * 100;
+                const progress = (completedStrategies / selectedStrategies.length) * 100;
                 document.getElementById('bt-progress').style.width = `${progress}%`;
             }
             
@@ -494,7 +647,7 @@
             // Hide loading status
             statusDiv.innerHTML = `<div class="alert alert-success">
                 <i class="fas fa-check-circle"></i> Backtest completed for ${sym}! 
-                Tested ${ALL_STRATEGIES.length} strategies from ${start} to ${end}.
+                Tested ${selectedStrategies.length} strategies from ${start} to ${end}.
             </div>`;
         };
 
@@ -516,6 +669,12 @@
                     row.classList.add('table-danger');
                 }
                 
+                // Add ML strategy indicator
+                const isMLStrategy = STRATEGY_CATEGORIES['Machine Learning'].includes(result.strategy);
+                if (isMLStrategy) {
+                    row.classList.add('table-info');
+                }
+                
                 const returnPct = result.total_return_pct || 0;
                 const trades = result.total_trades || 0;
                 const winRate = result.win_rate || 0;
@@ -527,8 +686,12 @@
                 const returnClass = returnPct > 0 ? 'text-success' : returnPct < 0 ? 'text-danger' : 'text-muted';
                 const sharpeClass = sharpe > 0.5 ? 'text-success' : sharpe < 0 ? 'text-danger' : 'text-muted';
                 
+                // Add ML indicator to strategy name
+                const strategyName = result.name;
+                const mlIndicator = isMLStrategy ? ' <span class="badge bg-info">ML</span>' : '';
+                
                 row.innerHTML = `
-                    <td><strong>${result.name}</strong>${result.error ? ' <i class="fas fa-exclamation-triangle text-warning" title="' + result.error + '"></i>' : ''}</td>
+                    <td><strong>${strategyName}</strong>${mlIndicator}${result.error ? ' <i class="fas fa-exclamation-triangle text-warning" title="' + result.error + '"></i>' : ''}</td>
                     <td class="${returnClass}"><strong>${returnPct.toFixed(2)}%</strong></td>
                     <td>${trades}</td>
                     <td>${winRate.toFixed(1)}%</td>
@@ -542,6 +705,155 @@
             
             resultsContainer.style.display = 'block';
         }
+
+        // ML Performance functions
+        let mlPerformanceChart = null;
+
+        // Refresh ML performance data
+        window.refreshMLPerformance = async function() {
+            try {
+                const response = await fetch('/api/ml-performance');
+                if (response.ok) {
+                    const data = await response.json();
+                    displayMLPerformance(data);
+                } else {
+                    console.error('Failed to fetch ML performance data');
+                }
+            } catch (error) {
+                console.error('Error refreshing ML performance:', error);
+            }
+        };
+
+        // Display ML performance data
+        function displayMLPerformance(data) {
+            // Update performance summary
+            const summaryDiv = document.getElementById('ml-performance-summary');
+            if (data.performance) {
+                let summaryHTML = '<div class="table-responsive"><table class="table table-sm">';
+                summaryHTML += '<thead><tr><th>Strategy</th><th>Signals</th><th>Win Rate</th><th>Avg PnL</th></tr></thead><tbody>';
+                
+                Object.entries(data.performance).forEach(([strategy, perf]) => {
+                    const winRate = perf.signals > 0 ? (perf.wins / perf.signals * 100).toFixed(1) : '0.0';
+                    const avgPnl = perf.signals > 0 ? (perf.total_pnl / perf.signals).toFixed(2) : '0.00';
+                    
+                    summaryHTML += `
+                        <tr>
+                            <td><strong>${STRATEGY_NAMES[strategy] || strategy}</strong></td>
+                            <td>${perf.signals}</td>
+                            <td>${winRate}%</td>
+                            <td class="${perf.total_pnl > 0 ? 'text-success' : 'text-danger'}">$${avgPnl}</td>
+                        </tr>
+                    `;
+                });
+                
+                summaryHTML += '</tbody></table></div>';
+                summaryDiv.innerHTML = summaryHTML;
+            }
+
+            // Update training status
+            const statusDiv = document.getElementById('ml-training-status');
+            if (data.training_status) {
+                let statusHTML = '<div class="table-responsive"><table class="table table-sm">';
+                statusHTML += '<thead><tr><th>Strategy</th><th>Status</th><th>Last Training</th></tr></thead><tbody>';
+                
+                Object.entries(data.training_status).forEach(([strategy, status]) => {
+                    const statusClass = status.status === 'trained' ? 'text-success' : 'text-warning';
+                    const statusIcon = status.status === 'trained' ? 'fas fa-check-circle' : 'fas fa-clock';
+                    
+                    statusHTML += `
+                        <tr>
+                            <td><strong>${STRATEGY_NAMES[strategy] || strategy}</strong></td>
+                            <td><i class="${statusIcon} ${statusClass}"></i> ${status.status}</td>
+                            <td>${status.last_training || 'Never'}</td>
+                        </tr>
+                    `;
+                });
+                
+                statusHTML += '</tbody></table></div>';
+                statusDiv.innerHTML = statusHTML;
+            }
+
+            // Update performance chart
+            updateMLPerformanceChart(data);
+        }
+
+        // Update ML performance chart
+        function updateMLPerformanceChart(data) {
+            const ctx = document.getElementById('ml-performance-chart');
+            
+            if (mlPerformanceChart) {
+                mlPerformanceChart.destroy();
+            }
+
+            if (data.performance) {
+                const strategies = Object.keys(data.performance);
+                const winRates = strategies.map(s => {
+                    const perf = data.performance[s];
+                    return perf.signals > 0 ? (perf.wins / perf.signals * 100) : 0;
+                });
+                const avgPnLs = strategies.map(s => {
+                    const perf = data.performance[s];
+                    return perf.signals > 0 ? (perf.total_pnl / perf.signals) : 0;
+                });
+
+                mlPerformanceChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: strategies.map(s => STRATEGY_NAMES[s] || s),
+                        datasets: [{
+                            label: 'Win Rate (%)',
+                            data: winRates,
+                            backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 1,
+                            yAxisID: 'y'
+                        }, {
+                            label: 'Avg PnL ($)',
+                            data: avgPnLs,
+                            backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            borderWidth: 1,
+                            yAxisID: 'y1'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        scales: {
+                            y: {
+                                type: 'linear',
+                                display: true,
+                                position: 'left',
+                                title: {
+                                    display: true,
+                                    text: 'Win Rate (%)'
+                                }
+                            },
+                            y1: {
+                                type: 'linear',
+                                display: true,
+                                position: 'right',
+                                title: {
+                                    display: true,
+                                    text: 'Avg PnL ($)'
+                                },
+                                grid: {
+                                    drawOnChartArea: false,
+                                },
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Load ML performance on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(refreshMLPerformance, 1000);
+        });
     </script>
 </body>
 </html> 

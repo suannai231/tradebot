@@ -40,6 +40,12 @@ async def run_backtest(
     engine = await _get_engine()
     try:
         result: BacktestResult = await engine.run_backtest(strategy.lower(), symbol.upper(), start_dt, end_dt, adjust_method=adjust_method)
+    except ValueError as e:
+        # Handle disabled strategies or invalid strategy types with 400 Bad Request
+        if "disabled" in str(e).lower() or "unknown strategy" in str(e).lower():
+            raise HTTPException(status_code=400, detail=str(e))
+        else:
+            raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

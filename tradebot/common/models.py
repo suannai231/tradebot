@@ -1,6 +1,8 @@
 from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
 
 
 class PriceTick(BaseModel):
@@ -37,4 +39,42 @@ class TradeSignal(BaseModel):
     price: float = Field(..., description="Price at signal generation")
     timestamp: datetime = Field(..., description="Signal timestamp in UTC")
     strategy: str | None = Field(None, description="Strategy that generated the signal")
-    confidence: float | None = Field(None, ge=0, le=1, description="Signal confidence 0-1") 
+    confidence: float | None = Field(None, ge=0, le=1, description="Signal confidence 0-1")
+
+
+@dataclass
+class MLStrategySignal:
+    """ML strategy signal with performance tracking"""
+    id: Optional[int] = None
+    strategy_name: str = ""
+    symbol: str = ""
+    signal_type: str = ""  # 'buy' or 'sell'
+    entry_price: float = 0.0
+    entry_timestamp: datetime = None
+    exit_price: Optional[float] = None
+    exit_timestamp: Optional[datetime] = None
+    confidence: float = 0.0
+    pnl: Optional[float] = None
+    is_winner: Optional[bool] = None
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime = None
+
+
+@dataclass
+class MLPerformanceMetrics:
+    """Aggregated ML strategy performance metrics"""
+    strategy_name: str
+    total_signals: int
+    winning_signals: int
+    losing_signals: int
+    open_signals: int
+    total_pnl: float
+    avg_pnl: float
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: float
+    last_signal_time: Optional[datetime]
+    model_accuracy: float
+    training_status: str
+    last_training_time: Optional[datetime] 

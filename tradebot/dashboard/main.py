@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 from tradebot.common.bus import MessageBus
 from tradebot.common.models import PriceTick, TradeSignal
@@ -63,6 +64,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize Redis client: {e}")
     
+    # Initialize ML performance tracker
+    try:
+        from tradebot.strategy.ml_service import initialize_performance_tracker
+        await initialize_performance_tracker(DATABASE_URL)
+        logger.info("ML performance tracker initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize ML performance tracker: {e}")
+    
     # Initialize message bus for real-time updates
     try:
         message_bus = MessageBus()
@@ -83,11 +92,29 @@ async def lifespan(app: FastAPI):
         await db_pool.close()
     if redis_client:
         await redis_client.aclose()
+    
+    # Cleanup ML performance tracker
+    try:
+        from tradebot.strategy.ml_service import cleanup_performance_tracker
+        await cleanup_performance_tracker()
+        logger.info("ML performance tracker cleaned up")
+    except Exception as e:
+        logger.error(f"Failed to cleanup ML performance tracker: {e}")
+    
     # MessageBus doesn't have a close method, so we don't need to close it
 
 
 # FastAPI app
 app = FastAPI(title="Trading Bot Dashboard", version="1.0.0", lifespan=lifespan)
+
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # You can restrict this to your frontend's origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Templates and static files
 dashboard_dir = Path(__file__).parent
@@ -660,6 +687,127 @@ async def get_available_symbols() -> List[str]:
         logger.error(f"Error getting available symbols: {e}")
         return []
 
+@app.get("/api/ml-performance")
+async def get_ml_performance():
+    """Get ML strategy performance metrics"""
+    try:
+        # Import here to avoid circular imports
+        from tradebot.strategy.ml_service import get_performance_tracker
+        
+        tracker = await get_performance_tracker()
+        if not tracker:
+            # Return empty performance if tracker not available
+            return {
+                "performance": {
+                    "ensemble_ml": {
+                        "signals": 0,
+                        "wins": 0,
+                        "total_pnl": 0.0,
+                        "avg_pnl": 0.0
+                    },
+                    "lstm_ml": {
+                        "signals": 0,
+                        "wins": 0,
+                        "total_pnl": 0.0,
+                        "avg_pnl": 0.0
+                    },
+                    "sentiment_ml": {
+                        "signals": 0,
+                        "wins": 0,
+                        "total_pnl": 0.0,
+                        "avg_pnl": 0.0
+                    },
+                    "rl_ml": {
+                        "signals": 0,
+                        "wins": 0,
+                        "total_pnl": 0.0,
+                        "avg_pnl": 0.0
+                    }
+                },
+                "training_status": {
+                    "ensemble_ml": {
+                        "status": "not_initialized",
+                        "last_training": None,
+                        "model_accuracy": 0.0
+                    },
+                    "lstm_ml": {
+                        "status": "not_initialized",
+                        "last_training": None,
+                        "model_accuracy": 0.0
+                    },
+                    "sentiment_ml": {
+                        "status": "not_initialized",
+                        "last_training": None,
+                        "model_accuracy": 0.0
+                    },
+                    "rl_ml": {
+                        "status": "not_initialized",
+                        "last_training": None,
+                        "model_accuracy": 0.0
+                    }
+                }
+            }
+        
+        # Get real performance data
+        ml_performance = await tracker.get_all_ml_performance()
+        
+        # Convert to API format
+        performance_data = {
+            "performance": {},
+            "training_status": {}
+        }
+        
+        # Process each ML strategy
+        ml_strategies = ["ensemble_ml", "lstm_ml", "sentiment_ml", "rl_ml"]
+        for strategy_name in ml_strategies:
+            if strategy_name in ml_performance:
+                metrics = ml_performance[strategy_name]
+                performance_data["performance"][strategy_name] = {
+                    "signals": metrics.total_signals,
+                    "wins": metrics.winning_signals,
+                    "total_pnl": metrics.total_pnl,
+                    "avg_pnl": metrics.avg_pnl
+                }
+                performance_data["training_status"][strategy_name] = {
+                    "status": metrics.training_status,
+                    "last_training": metrics.last_training_time.isoformat() if metrics.last_training_time else None,
+                    "model_accuracy": metrics.model_accuracy
+                }
+            else:
+                # Default values for strategies with no data
+                performance_data["performance"][strategy_name] = {
+                    "signals": 0,
+                    "wins": 0,
+                    "total_pnl": 0.0,
+                    "avg_pnl": 0.0
+                }
+                performance_data["training_status"][strategy_name] = {
+                    "status": "untrained",
+                    "last_training": None,
+                    "model_accuracy": 0.0
+                }
+        
+        return performance_data
+        
+    except Exception as e:
+        logger.error(f"Error getting ML performance data: {e}")
+        # Return empty data on error
+        return {
+            "performance": {
+                "ensemble_ml": {"signals": 0, "wins": 0, "total_pnl": 0.0, "avg_pnl": 0.0},
+                "lstm_ml": {"signals": 0, "wins": 0, "total_pnl": 0.0, "avg_pnl": 0.0},
+                "sentiment_ml": {"signals": 0, "wins": 0, "total_pnl": 0.0, "avg_pnl": 0.0},
+                "rl_ml": {"signals": 0, "wins": 0, "total_pnl": 0.0, "avg_pnl": 0.0}
+            },
+            "training_status": {
+                "ensemble_ml": {"status": "error", "last_training": None, "model_accuracy": 0.0},
+                "lstm_ml": {"status": "error", "last_training": None, "model_accuracy": 0.0},
+                "sentiment_ml": {"status": "error", "last_training": None, "model_accuracy": 0.0},
+                "rl_ml": {"status": "error", "last_training": None, "model_accuracy": 0.0}
+            }
+        }
+
+
 @app.get("/api/backtest")
 async def proxy_backtest(
     symbol: str,
@@ -672,7 +820,7 @@ async def proxy_backtest(
     
     try:
         # Forward the request to the API service
-        api_url = "http://api:8000/api/backtest"  # Use Docker service name
+        api_url = "http://localhost:8000/api/backtest"  # Use localhost for local development
         params = {
             "symbol": symbol,
             "strategy": strategy,

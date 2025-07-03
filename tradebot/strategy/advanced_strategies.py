@@ -714,6 +714,23 @@ def create_strategy(strategy_type: str, **kwargs):
         return EnhancedMomentumStrategy(**kwargs)
     elif strategy_type == "multi_timeframe_momentum":
         return MultiTimeframeMomentumStrategy(**kwargs)
+    # Machine Learning Strategies
+    elif strategy_type == "ensemble_ml":
+        from tradebot.strategy.ml_strategies import create_ml_strategy, MLStrategyConfig
+        config = MLStrategyConfig(**kwargs)
+        return create_ml_strategy("ensemble", config)
+    elif strategy_type == "lstm_ml":
+        from tradebot.strategy.ml_strategies import create_ml_strategy, MLStrategyConfig
+        config = MLStrategyConfig(**kwargs)
+        return create_ml_strategy("lstm", config)
+    elif strategy_type == "sentiment_ml":
+        from tradebot.strategy.ml_strategies import create_ml_strategy, MLStrategyConfig
+        config = MLStrategyConfig(**kwargs)
+        return create_ml_strategy("sentiment", config)
+    elif strategy_type == "rl_ml":
+        from tradebot.strategy.rl_strategies import create_rl_strategy, RLStrategyConfig
+        config = RLStrategyConfig(**kwargs)
+        return create_rl_strategy(config)
     else:
         raise ValueError(f"Unknown strategy type: {strategy_type}")
 
