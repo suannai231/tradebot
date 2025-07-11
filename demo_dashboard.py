@@ -114,21 +114,15 @@ class DashboardDemo:
                 await self.redis_client.set(error_key, int(current_errors) + 1)
     
     async def publish_price_tick(self, tick: PriceTick):
-        """Publish price tick to Redis stream"""
-        tick_data = {
-            "symbol": tick.symbol,
-            "price": str(tick.price),
-            "timestamp": tick.timestamp.isoformat(),
-            "volume": str(tick.volume or 0),
-            "open": str(tick.open or 0),
-            "high": str(tick.high or 0),
-            "low": str(tick.low or 0),
-            "close": str(tick.close or 0),
-            "trade_count": str(tick.trade_count or 0),
-            "vwap": str(tick.vwap or 0)
-        }
+        """Publish price tick to Redis stream using proper MessageBus format"""
+        # Use the MessageBus format to ensure compatibility with all subscribers
+        tick_data = tick.model_dump()
         
-        await self.redis_client.xadd("price.ticks", tick_data)
+        # Convert to JSON string and wrap in MessageBus format
+        import json
+        wrapped_data = {"data": json.dumps(tick_data, default=str)}
+        
+        await self.redis_client.xadd("price.ticks", wrapped_data)
     
     async def publish_trading_signal(self, signal: TradeSignal):
         """Publish trading signal to Redis stream"""

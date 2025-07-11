@@ -46,7 +46,7 @@ message_bus: Optional[MessageBus] = None
 
 def get_table_name() -> str:
     """Get the correct table name based on DATA_SOURCE environment variable"""
-    valid_sources = ['synthetic', 'alpaca', 'polygon', 'mock', 'test']
+    valid_sources = ['synthetic', 'alpaca', 'polygon']
     
     if DATA_SOURCE not in valid_sources:
         logger.warning(f"Unknown data source '{DATA_SOURCE}', defaulting to 'synthetic'")
@@ -56,9 +56,7 @@ def get_table_name() -> str:
     table_mapping = {
         'synthetic': 'price_ticks_synthetic',
         'alpaca': 'price_ticks_alpaca', 
-        'polygon': 'price_ticks_polygon',
-        'mock': 'price_ticks_mock',
-        'test': 'price_ticks_test'
+        'polygon': 'price_ticks_polygon'
     }
     
     return table_mapping.get(DATA_SOURCE, 'price_ticks_synthetic')
@@ -224,6 +222,7 @@ async def listen_for_updates():
     async def listen_price_ticks():
         """Listen for price tick updates"""
         try:
+            logger.info("Price tick listener started, waiting for messages...")
             async for data in message_bus.subscribe("price.ticks"):
                 try:
                     if isinstance(data, dict):
@@ -239,6 +238,22 @@ async def listen_for_updates():
                         if ts:
                             ts = ts.isoformat()
                         volume = getattr(data, "volume", 0) or 0
+                    
+                    # Normalise timestamp to ISO8601 with 'T' so browsers can parse it reliably
+                    if ts:
+                        try:
+                            if isinstance(ts, str):
+                                # Ensure "T" separator for JS Date compatibility
+                                if 'T' not in ts and ' ' in ts:
+                                    ts = ts.replace(' ', 'T')
+                                # Convert to datetime and back to strip microseconds / ensure ISO formatting
+                                from datetime import datetime
+                                ts = datetime.fromisoformat(ts.replace('Z', '+00:00')).isoformat()
+                        except Exception:
+                            # On any parsing error, fall back to current UTC time
+                            from datetime import datetime, timezone
+                            ts = datetime.now(timezone.utc).isoformat()
+
                     await manager.broadcast({
                         "type": "price_update",
                         "data": {
@@ -599,8 +614,14 @@ async def get_historical_data(
     
     table_name = get_table_name()
     
-    # Default to last 2 years of data if no limit specified
-    if limit == 0:
+    # For split adjustments, we need ALL historical data to show proper adjusted prices
+    # For regular requests, limit to recent data for performance
+    if adjust_for_splits and adjust_method.lower() != "none":
+        # Get all historical data for proper split adjustments
+        start_date = datetime(2020, 1, 1, tzinfo=timezone.utc)  # Start from 2020
+        end_date = datetime.now(timezone.utc)
+        logger.info(f"Fetching all historical data for split adjustment: {start_date} to {end_date}")
+    elif limit == 0:
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=730)  # 2 years
     else:
@@ -675,32 +696,70 @@ async def get_historical_data(
         
     async with db_pool.acquire() as conn:
         if timeframe == "1D":
-            query = f"""
-                SELECT 
-                    symbol,
-                    timestamp,
-                    open_price as open,
-                    high_price as high,
-                    low_price as low,
-                    close_price as close,
-                    volume
+            # Check if we have OHLCV data or just tick data
+            sample_query = f"""
+                SELECT COUNT(*) as ohlc_count
                 FROM {table_name}
                 WHERE symbol = $1 
                     AND timestamp >= $2 
                     AND timestamp <= $3
                     AND open_price IS NOT NULL
-                    AND high_price IS NOT NULL
-                    AND low_price IS NOT NULL
-                    AND close_price IS NOT NULL
-                ORDER BY timestamp ASC
+                LIMIT 1
             """
-            if limit > 0:
+            ohlc_count = await conn.fetchval(sample_query, symbol.upper(), start_date, end_date)
+            
+            if ohlc_count > 0:
+                # We have OHLCV data, use it directly
+                query = f"""
+                    SELECT 
+                        symbol,
+                        timestamp,
+                        open_price as open,
+                        high_price as high,
+                        low_price as low,
+                        close_price as close,
+                        COALESCE(volume, 0) as volume
+                    FROM {table_name}
+                    WHERE symbol = $1 
+                        AND timestamp >= $2 
+                        AND timestamp <= $3
+                        AND open_price IS NOT NULL
+                    ORDER BY timestamp DESC
+                """
+            else:
+                # We only have tick data, aggregate into 5-minute candlesticks
+                query = f"""
+                    SELECT 
+                        symbol,
+                        date_trunc('hour', timestamp) + 
+                        INTERVAL '5 minutes' * FLOOR(EXTRACT(minute FROM timestamp) / 5) as timestamp,
+                        first(price, timestamp) as open,
+                        max(price) as high,
+                        min(price) as low,
+                        last(price, timestamp) as close,
+                        COUNT(*) as volume
+                    FROM {table_name}
+                    WHERE symbol = $1 
+                        AND timestamp >= $2 
+                        AND timestamp <= $3
+                        AND price IS NOT NULL
+                    GROUP BY symbol, date_trunc('hour', timestamp) + 
+                        INTERVAL '5 minutes' * FLOOR(EXTRACT(minute FROM timestamp) / 5)
+                    ORDER BY timestamp DESC
+                """
+            
+            # Skip LIMIT when doing split adjustments to get all historical data
+            if limit > 0 and not (adjust_for_splits and adjust_method.lower() != "none"):
                 query += " LIMIT $4"
                 rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+                # Reverse the order to get chronological order for charting
+                rows = list(reversed(rows))
             else:
                 rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
+                # Reverse the order to get chronological order for charting
+                rows = list(reversed(rows))
         else:
-            # Weekly/Monthly data - aggregate from daily data
+            # Weekly/Monthly data - aggregate from daily data, handle both OHLCV and tick data
             if timeframe == "1W":
                 interval = "week"
             else:
@@ -710,27 +769,29 @@ async def get_historical_data(
                 SELECT 
                     symbol,
                     date_trunc('{interval}', timestamp) as timestamp,
-                    first(open_price, timestamp) as open,
-                    max(high_price) as high,
-                    min(low_price) as low,
-                    last(close_price, timestamp) as close,
-                    sum(volume) as volume
+                    first(COALESCE(open_price, price), timestamp) as open,
+                    max(COALESCE(high_price, price)) as high,
+                    min(COALESCE(low_price, price)) as low,
+                    last(COALESCE(close_price, price), timestamp) as close,
+                    sum(COALESCE(volume, 0)) as volume
                 FROM {table_name}
                 WHERE symbol = $1 
                     AND timestamp >= $2 
                     AND timestamp <= $3
-                    AND open_price IS NOT NULL
-                    AND high_price IS NOT NULL
-                    AND low_price IS NOT NULL
-                    AND close_price IS NOT NULL
+                    AND price IS NOT NULL
                 GROUP BY symbol, date_trunc('{interval}', timestamp)
-                ORDER BY timestamp ASC
+                ORDER BY timestamp DESC
             """
-            if limit > 0:
+            # Skip LIMIT when doing split adjustments to get all historical data
+            if limit > 0 and not (adjust_for_splits and adjust_method.lower() != "none"):
                 query += " LIMIT $4"
                 rows = await conn.fetch(query, symbol.upper(), start_date, end_date, limit)
+                # Reverse the order to get chronological order for charting
+                rows = list(reversed(rows))
             else:
                 rows = await conn.fetch(query, symbol.upper(), start_date, end_date)
+                # Reverse the order to get chronological order for charting
+                rows = list(reversed(rows))
         
         # Convert to candlestick format
         candles = []
@@ -764,6 +825,12 @@ async def get_historical_data(
             if splits:
                 method = "backward" if adjust_method.lower() != "forward" else "forward"
                 candles = await apply_split_adjustments(candles, splits, method)
+                
+                # Apply limit AFTER split adjustments if we fetched all data for adjustments
+                # and the original request had a limit
+                if limit > 0 and len(candles) > limit:
+                    candles = candles[-limit:]  # Get most recent N records
+                    logger.info(f"Applied limit of {limit} after split adjustments, returning {len(candles)} candles")
         
         # Add cache-busting headers to prevent browser caching of historical data
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

@@ -30,7 +30,7 @@ class StorageService:
         
     def _get_table_name(self) -> str:
         """Get table name based on data source"""
-        valid_sources = ['synthetic', 'alpaca', 'polygon', 'mock', 'test']
+        valid_sources = ['synthetic', 'alpaca', 'polygon']
         
         if DATA_SOURCE not in valid_sources:
             logger.warning(f"Unknown data source '{DATA_SOURCE}', defaulting to 'synthetic'")
@@ -40,9 +40,7 @@ class StorageService:
         table_mapping = {
             'synthetic': 'price_ticks_synthetic',
             'alpaca': 'price_ticks_alpaca', 
-            'polygon': 'price_ticks_polygon',
-            'mock': 'price_ticks_mock',
-            'test': 'price_ticks_test'
+            'polygon': 'price_ticks_polygon'
         }
         
         return table_mapping.get(DATA_SOURCE, 'price_ticks_synthetic')
@@ -64,9 +62,7 @@ class StorageService:
         table_names = [
             'price_ticks_synthetic',
             'price_ticks_alpaca', 
-            'price_ticks_polygon',
-            'price_ticks_mock',
-            'price_ticks_test'
+            'price_ticks_polygon'
         ]
         
         async with self.pool.acquire() as conn:

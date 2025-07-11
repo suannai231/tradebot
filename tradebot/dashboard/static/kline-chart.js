@@ -769,9 +769,12 @@ class KLineChart {
                                 const volumes = volumeDataset.data.map(d => d.y || 0).filter(v => v > 0);
                                 if (volumes.length > 0) {
                                     const maxVolume = Math.max(...volumes);
-                                    return maxVolume * 5; // Scale to use bottom 20% of chart
+                                    const result = maxVolume * 5; // Scale to use bottom 20% of chart
+                                    console.log(`Volume scale callback: max=${result.toLocaleString()}, volumes: [${Math.min(...volumes)}, ${maxVolume}]`);
+                                    return result;
                                 }
                             }
+                            console.log('Volume scale callback: using default 1000000');
                             return 1000000;
                         },
                         min: 0
@@ -1046,19 +1049,34 @@ class KLineChart {
             const adjustmentParam = adjustmentParams[adjustmentMethod] || 'adjust_for_splits=false';
             
             const cacheBuster = Date.now() + Math.random();
-            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=0&${adjustmentParam}&_t=${cacheBuster}`, {
+            // Limit data points to prevent browser overload: 1000 for daily, 5000 for weekly/monthly
+            const limit = this.currentTimeframe === '1D' ? 1000 : 5000;
+            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=${limit}&${adjustmentParam}&_t=${cacheBuster}`, {
                 cache: 'no-cache',
                 headers: {
                     'Cache-Control': 'no-cache',
                     'Pragma': 'no-cache'
                 }
             });
-            const data = await response.json();
+            const responseText = await response.text();
+            console.log('Raw API response text:', responseText);
+            let data;
+            try {
+                data = JSON.parse(responseText);
+            } catch (parseError) {
+                console.error('JSON parse error:', parseError);
+                this.showErrorMessage('Invalid API response format');
+                return;
+            }
             console.log(`K-line API data (${adjustmentMethod} adjustment):`, data); // DEBUG
+            console.log('Response status:', response.status, 'OK:', response.ok);
+            console.log('Data type:', typeof data, 'Is array:', Array.isArray(data));
+            console.log('Data has detail:', !!data.detail);
             
             // Check if response is an error
             if (!response.ok || data.detail || !Array.isArray(data)) {
-                console.error('API error:', data);
+                console.error('API error condition triggered:', {ok: response.ok, detail: data.detail, isArray: Array.isArray(data)});
+                console.error('Full data:', data);
                 this.showErrorMessage(data.detail || 'Failed to load chart data');
                 return;
             }
@@ -1071,34 +1089,52 @@ class KLineChart {
                 return;
             }
             
-            // Sort chartData by date using real trading dates (no compression)
-            const chartData = data.map(candle => {
-                // Add safety checks for candle properties
-                if (!candle || typeof candle !== 'object') {
-                    console.warn('Invalid candle data:', candle);
-                    return null;
-                }
-                
-                const dateObj = new Date(candle.timestamp); // parse ISO / epoch equally
-                const epoch = dateObj.getTime();            // numeric ms since 1970-01-01
-                const dateStr = dateObj.toISOString().slice(0,10); // YYYY-MM-DD
-                return {
-                    x: epoch,         // Chart.js time scale accepts epoch ms
-                    dateStr,          // cached human-readable date
-                    y: candle.close || 0,
-                    o: candle.open || 0,
-                    h: candle.high || 0,
-                    l: candle.low || 0,
-                    c: candle.close || 0,
-                    v: candle.volume || 0
-                };
-            }).filter(item => item !== null).sort((a, b) => a.x - b.x);
+            let chartData;
+            try {
+                // Sort chartData by date using real trading dates (no compression)
+                chartData = data.map(candle => {
+                    // Add safety checks for candle properties
+                    if (!candle || typeof candle !== 'object') {
+                        console.warn('Invalid candle data:', candle);
+                        return null;
+                    }
+                    
+                    const dateObj = new Date(candle.timestamp); // parse ISO / epoch equally
+                    if (isNaN(dateObj.getTime())) {
+                        console.warn('Invalid timestamp:', candle.timestamp);
+                        return null;
+                    }
+                    const epoch = dateObj.getTime();            // numeric ms since 1970-01-01
+                    const dateStr = dateObj.toISOString().slice(0,10); // YYYY-MM-DD
+                    return {
+                        x: epoch,         // Chart.js time scale accepts epoch ms
+                        dateStr,          // cached human-readable date
+                        y: candle.close || 0,
+                        o: candle.open || 0,
+                        h: candle.high || 0,
+                        l: candle.low || 0,
+                        c: candle.close || 0,
+                        v: candle.volume || 0
+                    };
+                }).filter(item => item !== null).sort((a, b) => a.x - b.x);
+            } catch (mapError) {
+                console.error('Error mapping chart data:', mapError);
+                this.showErrorMessage('Error processing chart data');
+                return;
+            }
             
             // Filter out non-trading dates only when using daily data
-            const filteredChartData = this.currentTimeframe === '1D'
-                ? this.filterTradingDays(chartData)
-                : chartData;
-            console.log('Filtered out', chartData.length - filteredChartData.length, 'non-trading days (timeframe:', this.currentTimeframe, ')');
+            let filteredChartData;
+            try {
+                filteredChartData = this.currentTimeframe === '1D'
+                    ? this.filterTradingDays(chartData)
+                    : chartData;
+                console.log('Filtered out', chartData.length - filteredChartData.length, 'non-trading days (timeframe:', this.currentTimeframe, ')');
+            } catch (filterError) {
+                console.error('Error filtering trading days:', filterError);
+                this.showErrorMessage('Error filtering chart data');
+                return;
+            }
 
             // Use real trading dates without compression
             const displayData = filteredChartData;
@@ -1159,10 +1195,24 @@ class KLineChart {
                 const volumes = volumeData.map(d => d.v || 0).filter(v => v > 0);
                 if (volumes.length > 0) {
                     const maxVolume = Math.max(...volumes);
-                    const padding = maxVolume * 0.1; // 10% padding
-                    this.chart.options.scales.yVolume.max = maxVolume * 5; // Scale to use bottom 20% of chart
-                    console.log(`Volume Y-axis scaled to max: ${maxVolume * 5}`);
+                    const newMax = maxVolume * 5; // Scale to use bottom 20% of chart
+                    
+                    // Update the volume Y-axis scale
+                    this.chart.options.scales.yVolume.max = newMax;
+                    this.chart.options.scales.yVolume.min = 0;
+                    
+                    console.log(`Volume Y-axis scaled to max: ${newMax.toLocaleString()}, volumes range: [${Math.min(...volumes)}, ${maxVolume}]`);
+                } else {
+                    // No volume data, set a default small scale to ensure bars are visible
+                    this.chart.options.scales.yVolume.max = 1000;
+                    this.chart.options.scales.yVolume.min = 0;
+                    console.log('No volume data found, using default volume scale');
                 }
+            } else {
+                // No volume data at all, set minimal scale
+                this.chart.options.scales.yVolume.max = 1000;
+                this.chart.options.scales.yVolume.min = 0;
+                console.log('No volume data, setting minimal volume scale');
             }
             
             // Adjust visible window to last year of data
@@ -1174,7 +1224,17 @@ class KLineChart {
                 this.chart.options.scales.x.max = maxDate;
             }
             
-            this.chart.update();
+            // Update chart with resize mode to ensure volume scale is properly recalculated
+            this.chart.update('resize');
+            
+            // Force volume scale recalculation after chart is fully rendered
+            setTimeout(() => {
+                if (this.chart && volumeData.length > 0) {
+                    this.updateVolumeScale();
+                    this.chart.update('none'); // Silent update
+                    console.log('Volume scale force-updated after render');
+                }
+            }, 100);
 
             // ----- Sync Strategy Comparison Back-test (non-blocking) -----
             try {
@@ -1350,27 +1410,42 @@ class KLineChart {
         const xScale = this.chart.scales.x;
         const volumeData = this.chart.data.datasets[1].data; // Volume dataset
         
-        if (!xScale || !volumeData || volumeData.length === 0) return;
+        if (!volumeData || volumeData.length === 0) return;
         
-        const minX = xScale.min;
-        const maxX = xScale.max;
+        let volumesToUse = [];
         
-        // Filter volume data to only visible range
-        const visibleVolumeData = volumeData.filter(d => d && d.x >= minX && d.x <= maxX);
+        // If we have a valid x-scale with min/max, use visible data
+        if (xScale && xScale.min !== undefined && xScale.max !== undefined) {
+            const minX = xScale.min;
+            const maxX = xScale.max;
+            
+            // Filter volume data to only visible range
+            const visibleVolumeData = volumeData.filter(d => d && d.x >= minX && d.x <= maxX);
+            
+            if (visibleVolumeData.length > 0) {
+                volumesToUse = visibleVolumeData.map(d => d.v || 0).filter(v => v > 0);
+            }
+        }
         
-        if (visibleVolumeData.length === 0) return;
+        // If no visible data or no x-scale, use all data (initial load case)
+        if (volumesToUse.length === 0) {
+            volumesToUse = volumeData.map(d => d.v || 0).filter(v => v > 0);
+        }
         
-        // Get volume values from visible data
-        const visibleVolumes = visibleVolumeData.map(d => d.v || 0).filter(v => v > 0);
-        
-        if (visibleVolumes.length > 0) {
-            const maxVolume = Math.max(...visibleVolumes);
+        if (volumesToUse.length > 0) {
+            const maxVolume = Math.max(...volumesToUse);
             const newMax = maxVolume * 5; // Scale to use bottom 20% of chart
             
             // Update volume Y-axis scale
             this.chart.options.scales.yVolume.max = newMax;
+            this.chart.options.scales.yVolume.min = 0;
             
-            console.log(`Volume scale updated for visible range: max = ${newMax.toLocaleString()}`);
+            console.log(`Volume scale updated: max = ${newMax.toLocaleString()}, volumes: [${Math.min(...volumesToUse)}, ${maxVolume}]`);
+        } else {
+            // No volume data, set default scale
+            this.chart.options.scales.yVolume.max = 1000;
+            this.chart.options.scales.yVolume.min = 0;
+            console.log('No volume data found, using default volume scale');
         }
     }
 
@@ -1397,11 +1472,13 @@ class KLineChart {
                     this.chart.pan({ x: panAmount }, undefined, 'default');
                     console.log('Manual drag pan triggered');
                     this.updateVolumeScale(); // Auto-adjust volume scale for visible range
+                    this.chart.update('none'); // Silent update to apply volume scale
                 } else if (this.chart.fallbackPan) {
                     // Use fallback pan method
                     this.chart.fallbackPan(panAmount);
                     console.log('Manual fallback pan triggered');
                     this.updateVolumeScale(); // Auto-adjust volume scale for visible range
+                    this.chart.update('none'); // Silent update to apply volume scale
                 }
                 this.lastX = e.clientX;
                 e.preventDefault();
@@ -1452,11 +1529,13 @@ class KLineChart {
                         this.chart.pan({ x: panAmount }, undefined, 'default');
                         console.log('Manual touch pan triggered');
                         this.updateVolumeScale(); // Auto-adjust volume scale for visible range
+                        this.chart.update('none'); // Silent update to apply volume scale
                     } else if (this.chart.fallbackPan) {
                         // Use fallback pan method
                         this.chart.fallbackPan(panAmount);
                         console.log('Manual touch fallback pan triggered');
                         this.updateVolumeScale(); // Auto-adjust volume scale for visible range
+                        this.chart.update('none'); // Silent update to apply volume scale
                     }
                     touchStartX = touch.clientX;
                     e.preventDefault();

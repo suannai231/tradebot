@@ -66,6 +66,7 @@ class TradingDashboard {
     }
 
     handleWebSocketMessage(message) {
+        console.log('📨 WebSocket message received:', message);
         switch (message.type) {
             case 'connection_established':
                 console.log('Dashboard connection established');
@@ -92,6 +93,7 @@ class TradingDashboard {
     }
 
     handlePriceUpdate(data) {
+        console.log('🔄 Frontend received price update:', data);
         const { symbol, price, timestamp, volume } = data;
         
         // Store price data
@@ -113,7 +115,10 @@ class TradingDashboard {
         
         // Update chart if this symbol is selected
         if (this.selectedSymbol === symbol) {
+            console.log(`📊 Updating chart for selected symbol: ${symbol}`);
             this.updateChart();
+        } else {
+            console.log(`📊 Symbol ${symbol} not selected, current: ${this.selectedSymbol}`);
         }
         
         // Add to activity log
@@ -293,8 +298,16 @@ class TradingDashboard {
     async loadSystemStats() {
         try {
             console.log('Loading system stats...');
-            const response = await fetch('/api/system-stats');
+            const response = await fetch('/api/system-stats', {
+                timeout: 5000,  // 5 second timeout
+                signal: AbortSignal.timeout(5000)
+            });
             console.log('Response status:', response.status);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const stats = await response.json();
             console.log('System stats:', stats);
             
@@ -303,15 +316,27 @@ class TradingDashboard {
             document.getElementById('total-ticks').textContent = stats.total_ticks.toLocaleString();
             document.getElementById('total-signals').textContent = stats.total_signals.toLocaleString();
             
+            // Clear any previous API error status and restore connection
+            this.clearApiError();
+            this.updateConnectionStatus(true);
             console.log('Updated DOM elements with stats');
         } catch (error) {
             console.error('Error loading system stats:', error);
+            this.handleApiError('Failed to load system statistics');
         }
     }
 
     async loadMarketSummary() {
         try {
-            const response = await fetch('/api/market-summary?limit=20');
+            const response = await fetch('/api/market-summary?limit=20', {
+                timeout: 5000,
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const summary = await response.json();
             
             // ensure autocomplete datalist is populated
@@ -365,14 +390,36 @@ class TradingDashboard {
             document.getElementById('market-last-update').textContent = 
                 `Last updated: ${new Date().toLocaleTimeString()}`;
                 
+            // Clear any previous API error status and restore connection
+            this.clearApiError();
+            this.updateConnectionStatus(true);
+                
         } catch (error) {
             console.error('Error loading market summary:', error);
+            this.handleApiError('Failed to load market data');
+            
+            // Show error state in market summary
+            const tbody = document.getElementById('market-summary-body');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger"><i class="fas fa-exclamation-triangle"></i> Unable to load market data</td></tr>';
+            }
+            
+            document.getElementById('market-last-update').textContent = 
+                `Connection lost at ${new Date().toLocaleTimeString()}`;
         }
     }
 
     async loadSystemHealth() {
         try {
-            const response = await fetch('/api/system-health');
+            const response = await fetch('/api/system-health', {
+                timeout: 5000,
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const health = await response.json();
             
             const container = document.getElementById('system-health');
@@ -414,8 +461,30 @@ class TradingDashboard {
                 `;
             }).join('');
             
+            // Clear any previous API error status and restore connection
+            this.clearApiError();
+            this.updateConnectionStatus(true);
+            
         } catch (error) {
             console.error('Error loading system health:', error);
+            this.handleApiError('Failed to load system health');
+            
+            // Show error state in system health
+            const container = document.getElementById('system-health');
+            if (container) {
+                container.innerHTML = `
+                    <div class="health-service">
+                        <div>
+                            <div class="service-name text-danger">Connection Failed</div>
+                            <div class="service-uptime">Unable to reach backend services</div>
+                        </div>
+                        <div class="service-status">
+                            <i class="fas fa-circle text-danger me-2"></i>
+                            <span>disconnected</span>
+                        </div>
+                    </div>
+                `;
+            }
         }
     }
 
@@ -529,6 +598,35 @@ class TradingDashboard {
         document.getElementById('activity-log').innerHTML = 
             '<div class="text-center text-muted">Waiting for activity...</div>';
         this.activityLogItems = [];
+    }
+
+    handleApiError(message) {
+        console.warn('API Error:', message);
+        
+        // Update connection status to show disconnection
+        this.updateConnectionStatus(false);
+        
+        // Add error to activity log
+        this.addActivityItem('error', message, new Date().toISOString());
+        
+        // Show error notification (if element exists)
+        const errorContainer = document.getElementById('api-error-container');
+        if (errorContainer) {
+            errorContainer.innerHTML = `
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    <i class="fas fa-exclamation-triangle"></i> ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+        }
+    }
+
+    clearApiError() {
+        // Clear any API error notifications
+        const errorContainer = document.getElementById('api-error-container');
+        if (errorContainer) {
+            errorContainer.innerHTML = '';
+        }
     }
 }
 

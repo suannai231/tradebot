@@ -76,6 +76,7 @@ The system uses **separate tables** for different data sources to ensure data in
 | `synthetic` | `price_ticks_synthetic` | Development/testing |
 | `alpaca` | `price_ticks_alpaca` | Real Alpaca data |
 | `polygon` | `price_ticks_polygon` | Real Polygon data |
+| `test` | `price_ticks_test` | Integration testing |
 
 **Benefits**: No data contamination, clean backtests, easy cleanup, better compliance.
 

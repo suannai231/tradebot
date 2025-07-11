@@ -43,6 +43,16 @@ class MessageBus:
                 # no running loop yet (likely synchronous context); ignore
                 pass
 
+    async def close(self) -> None:
+        """Close the Redis connection."""
+        if self._redis is not None:
+            await self._redis.aclose()
+            self._redis = None
+
+    async def disconnect(self) -> None:
+        """Alias for close() method for backward compatibility."""
+        await self.close()
+
     # ---------------------------------------------------------------------
     # Publish
     # ---------------------------------------------------------------------
@@ -97,4 +107,26 @@ class MessageBus:
             _, entries = response[0]
             entry_id, data = entries[0]
             last_id = entry_id
-            yield json.loads(data["data"]) 
+            
+            # Handle both MessageBus format and direct Redis format
+            if "data" in data:
+                # Standard MessageBus format: {"data": "json_string"}
+                yield json.loads(data["data"])
+            else:
+                # Direct Redis format: {"symbol": "TNXP", "price": "42.00", ...}
+                # Convert string values back to appropriate types
+                processed_data = {}
+                for key, value in data.items():
+                    if key in ["price", "open", "high", "low", "close", "vwap"]:
+                        try:
+                            processed_data[key] = float(value)
+                        except (ValueError, TypeError):
+                            processed_data[key] = value
+                    elif key in ["volume", "trade_count"]:
+                        try:
+                            processed_data[key] = int(value)
+                        except (ValueError, TypeError):
+                            processed_data[key] = value
+                    else:
+                        processed_data[key] = value
+                yield processed_data 

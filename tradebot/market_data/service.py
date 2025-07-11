@@ -29,7 +29,7 @@ INITIAL_PRICES: Dict[str, float] = {}
 
 def get_table_name() -> str:
     """Get the correct table name based on DATA_SOURCE environment variable"""
-    valid_sources = ['synthetic', 'alpaca', 'polygon', 'mock', 'test']
+    valid_sources = ['synthetic', 'alpaca', 'polygon']
     
     if DATA_SOURCE not in valid_sources:
         logger.warning(f"Unknown data source '{DATA_SOURCE}', defaulting to 'synthetic'")
@@ -39,16 +39,14 @@ def get_table_name() -> str:
     table_mapping = {
         'synthetic': 'price_ticks_synthetic',
         'alpaca': 'price_ticks_alpaca', 
-        'polygon': 'price_ticks_polygon',
-        'mock': 'price_ticks_mock',
-        'test': 'price_ticks_test'
+        'polygon': 'price_ticks_polygon'
     }
     
     return table_mapping.get(DATA_SOURCE, 'price_ticks_synthetic')
 
 
 async def generate_ticks(bus: MessageBus, interval: float = 1.0):
-    """Generate random walk prices with mock OHLCV data and publish to Redis stream."""
+    """Generate random walk prices with realistic OHLCV data and publish to Redis stream."""
     while True:
         for symbol in SYMBOLS:
             # Simple random walk for close price
@@ -149,14 +147,14 @@ async def get_previous_close_prices(symbols: List[str]) -> Dict[str, float]:
 
 
 async def initialize_symbols():
-    """Initialize symbols for mock data generation - always use SYMBOLS env variable for mock data."""
+    """Initialize symbols for synthetic data generation - always use SYMBOLS env variable for synthetic data."""
     global SYMBOLS, INITIAL_PRICES
     
-    # For mock data generation, always use the SYMBOLS environment variable
+    # For synthetic data generation, always use the SYMBOLS environment variable
     # This ensures controlled, predictable data generation for development/testing
     SYMBOLS = [symbol.strip().upper() for symbol in LEGACY_SYMBOLS]
     
-    logger.info("🎭 Mock market data service configured for symbols: %s", SYMBOLS)
+    logger.info("🎭 Synthetic market data service configured for symbols: %s", SYMBOLS)
     logger.info("📊 Using data source table: %s", get_table_name())
     
     # Initialize prices using previous close prices from database
@@ -165,12 +163,12 @@ async def initialize_symbols():
 
 
 async def main():
-    logger.info("🚀 Mock market data service starting...")
+    logger.info("🚀 Synthetic market data service starting...")
     
     # Initialize symbols first
     await initialize_symbols()
     
-    logger.info("✅ Mock market data service ready for %d symbols", len(SYMBOLS))
+    logger.info("✅ Synthetic market data service ready for %d symbols", len(SYMBOLS))
     bus = MessageBus()
     await bus.connect()
     await generate_ticks(bus)
@@ -180,4 +178,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🛑 Mock market data service stopped") 
+        logger.info("🛑 Synthetic market data service stopped") 

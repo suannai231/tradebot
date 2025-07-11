@@ -270,10 +270,16 @@ async def detect_and_store_splits(pool: asyncpg.Pool, symbol: str, raw_bars: Lis
                     prev_adj = split_bars[i-1]["c"]
                     prev_ratio = prev_raw / prev_adj if prev_adj > 0 else 1.0
                     
-                    # Detect actual split event (ratio jump)
-                    ratio_change = split_ratio / prev_ratio
-                    if ratio_change > 1.5:  # 50%+ ratio increase indicates a split
-                        split_factor = round(ratio_change)
+                    # Detect actual split event by looking at price jumps
+                    raw_price_change = raw_close / prev_raw if prev_raw > 0 else 1.0
+                    adj_price_change = adj_close / prev_adj if prev_adj > 0 else 1.0
+                    
+                    # Split detection: significant difference between raw and adjusted price changes
+                    price_change_ratio = raw_price_change / adj_price_change if adj_price_change > 0 else 1.0
+                    
+                    # Forward split: raw price drops significantly more than adjusted price
+                    if price_change_ratio < 0.67 and raw_price_change < 0.67:  # Raw price dropped by >33%
+                        split_factor = round(1.0 / raw_price_change)
                         splits_detected.append({
                             'symbol': symbol,
                             'split_date': timestamp.date(),
@@ -282,6 +288,20 @@ async def detect_and_store_splits(pool: asyncpg.Pool, symbol: str, raw_bars: Lis
                             'raw_price_after': raw_close,
                             'adj_price': adj_close
                         })
+                        logger.info(f"Detected forward split for {symbol} on {timestamp.date()}: {split_factor}:1")
+                    
+                    # Reverse split: raw price jumps significantly more than adjusted price  
+                    elif price_change_ratio > 1.5 and raw_price_change > 1.5:  # Raw price increased by >50%
+                        split_factor = round(raw_price_change)  # e.g., 100.0 for 1:100 reverse split (for backward adjustment)
+                        splits_detected.append({
+                            'symbol': symbol,
+                            'split_date': timestamp.date(),
+                            'split_ratio': split_factor,
+                            'raw_price_before': prev_raw,
+                            'raw_price_after': raw_close,
+                            'adj_price': adj_close
+                        })
+                        logger.info(f"Detected reverse split for {symbol} on {timestamp.date()}: 1:{round(raw_price_change)} (stored factor: {split_factor} for backward adjustment)")
     
     # Store detected splits in database
     if splits_detected:

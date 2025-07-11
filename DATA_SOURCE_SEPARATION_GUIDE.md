@@ -10,17 +10,16 @@ The trading bot system now uses **separate tables** for different data sources i
 
 | Data Source | Table Name | Purpose |
 |-------------|------------|---------|
-| `synthetic` | `price_ticks_synthetic` | Generated mock data for development |
+| `synthetic` | `price_ticks_synthetic` | Generated synthetic data for development |
 | `alpaca` | `price_ticks_alpaca` | Real market data from Alpaca API |
 | `polygon` | `price_ticks_polygon` | Real market data from Polygon API |
-| `mock` | `price_ticks_mock` | Test data for unit tests |
 | `test` | `price_ticks_test` | Integration test data |
 
 ### Why Separate Tables?
 
-✅ **Data Integrity**: No risk of mixing real and mock data  
+✅ **Data Integrity**: No risk of mixing real and synthetic data  
 ✅ **Clean Testing**: Guaranteed pure datasets for backtesting  
-✅ **Easy Cleanup**: Drop entire mock tables without affecting production  
+✅ **Easy Cleanup**: Drop entire test tables without affecting production  
 ✅ **Clear Audit Trail**: Know exactly where each data point came from  
 ✅ **Performance**: Smaller tables, faster queries  
 ✅ **Compliance**: Better for financial data regulations  
@@ -54,7 +53,6 @@ Control which table is used with the `DATA_SOURCE` environment variable:
 DATA_SOURCE=synthetic  # Default
 DATA_SOURCE=alpaca     # Real Alpaca data
 DATA_SOURCE=polygon    # Real Polygon data
-DATA_SOURCE=mock       # Test data
 DATA_SOURCE=test       # Integration tests
 ```
 
@@ -103,7 +101,6 @@ python manage_data_sources.py compare --source alpaca --target synthetic
 ✅ alpaca       | price_ticks_alpaca        | 1,234,567 rows | 500 symbols  
    alpaca       |                           | 2024-01-01 to 2025-01-20
 ⚪ polygon      | price_ticks_polygon       | Empty
-❌ mock         | price_ticks_mock          | Not created
 ❌ test         | price_ticks_test          | Not created
 ```
 
