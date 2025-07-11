@@ -591,7 +591,7 @@ async def get_historical_data(
     timeframe: str = "1D",
     limit: int = 100,
     adjust_for_splits: bool = True,
-    adjust_method: str = "forward"
+    adjust_method: str = "backward"
 ) -> List[Dict[str, Any]]:
     """Get historical OHLCV data for a symbol with optional split adjustment."""
     if not db_pool:
@@ -630,36 +630,44 @@ async def get_historical_data(
             for split in splits_by_date:
                 split_date = datetime.fromisoformat(split['split_date']).date()
                 if method == "backward":
-                    # divide by splits that happened AFTER the candle date (strictly after)
+                    # For backward adjustment: multiply prices for dates before the split
+                    # Split date and after should remain unchanged (already in post-split scale)
                     if candle_date < split_date:
                         cumulative_split_factor *= split['split_ratio']
                 else:  # forward
-                    # divide by splits that happened BEFORE the candle date (strictly before)
-                    if candle_date > split_date:
+                    # For forward adjustment: divide prices for dates on or after the split
+                    # Split date is the first day of new prices, so include it
+                    if candle_date >= split_date:
                         cumulative_split_factor *= split['split_ratio']
             
-            # Apply backward adjustment: divide prices by cumulative factor, multiply volume
+            # Apply split adjustments
             adjusted_candle = candle.copy()
             if cumulative_split_factor != 1.0:
-                # For backward adjustment multiply prices so pre-split prices align with post-split scale
                 if method == "backward":
+                    # For backward adjustment: multiply historical prices by cumulative split factor
+                    # This makes historical prices comparable to current post-split prices
                     adjusted_candle['open']  = candle['open']  * cumulative_split_factor
                     adjusted_candle['high']  = candle['high']  * cumulative_split_factor
                     adjusted_candle['low']   = candle['low']   * cumulative_split_factor
                     adjusted_candle['close'] = candle['close'] * cumulative_split_factor
-                    # Keep original volume for clarity (optional: adjust if needed)
-                    adjusted_candle['volume'] = candle['volume']
-                else:  # forward adjustment (divide prices)
+                    # Volume: Multiply by split factor to show equivalent current shares
+                    # This matches professional platforms like Moomoo that show split-adjusted volume
+                    adjusted_candle['volume'] = candle['volume'] * cumulative_split_factor
+                else:  # forward adjustment
+                    # For forward adjustment: divide post-split prices by cumulative split factor
+                    # This makes post-split prices comparable to historical pre-split prices
                     adjusted_candle['open']  = candle['open']  / cumulative_split_factor
                     adjusted_candle['high']  = candle['high']  / cumulative_split_factor
                     adjusted_candle['low']   = candle['low']   / cumulative_split_factor
                     adjusted_candle['close'] = candle['close'] / cumulative_split_factor
-                    # Keep original volume for clarity (optional: adjust if needed)
-                    adjusted_candle['volume'] = candle['volume']
+                    # Volume: Divide by split factor to show equivalent historical shares
+                    # This maintains consistency with forward-adjusted prices
+                    adjusted_candle['volume'] = candle['volume'] / cumulative_split_factor
+                
                 # Debug logging for sample dates
-                if candle_date.strftime('%Y-%m-%d') in ['2025-02-04', '2025-02-05']:
+                if candle_date.strftime('%Y-%m-%d') in ['2025-02-04', '2025-02-05', '2024-06-10', '2023-05-10', '2022-05-17']:
                     logger.info(
-                        f"{method.capitalize()} adjust {candle_date}: close {candle['close']} -> {adjusted_candle['close']} (factor={cumulative_split_factor})")
+                        f"{method.capitalize()} adjust {candle_date}: close {candle['close']:.6f} -> {adjusted_candle['close']:.6f} (factor={cumulative_split_factor})")
             
             adjusted_candles.append(adjusted_candle)
         
