@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tradebot.backfill</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/yue.yin/Library/CloudStorage/GoogleDrive-suannai231@gmail.com/My Drive/Projects/Trade/run_daily_backfill.sh</string>
+    </array>
+    
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/yue.yin/Library/CloudStorage/GoogleDrive-suannai231@gmail.com/My Drive/Projects/Trade/logs/launchd_backfill.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/yue.yin/Library/CloudStorage/GoogleDrive-suannai231@gmail.com/My Drive/Projects/Trade/logs/launchd_backfill_error.log</string>
+    
+    <key>RunAtLoad</key>
+    <false/>
+    
+    <key>KeepAlive</key>
+    <false/>
+    
+    <key>WakeInterval</key>
+    <integer>86400</integer>
+    
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    
+    <key>StartOnMount</key>
+    <false/>
+</dict>
+</plist> 

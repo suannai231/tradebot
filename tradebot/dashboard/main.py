@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     
     # Initialize Redis client
     try:
-        redis_client = redis.from_url(REDIS_URL)
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         await redis_client.ping()
         logger.info("Redis client initialized")
     except Exception as e:
@@ -450,46 +450,110 @@ async def get_recent_signals(limit: int = 50) -> List[Dict[str, Any]]:
 @app.get("/api/system-health")
 async def get_system_health() -> List[SystemHealth]:
     """Get system health status for all services"""
-    if not db_pool:
-        return []
+    health_data = []
+    current_time = datetime.now(timezone.utc)
     
+    # Check database connectivity
     try:
-        # Get basic system stats
-        async with db_pool.acquire() as conn:
-            # Check database connectivity
-            await conn.execute("SELECT 1")
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute("SELECT 1")
             db_status = "healthy"
+        else:
+            db_status = "error"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
         db_status = "error"
     
-    # Mock health data for now
-    health_data = [
-        SystemHealth(
-            service="Database",
-            status=db_status,
-            last_heartbeat=datetime.now(timezone.utc),
-            error_count=0 if db_status == "healthy" else 1
-        ),
-        SystemHealth(
-            service="Market Data Service",
-            status="healthy",
-            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=30),
-            error_count=0
-        ),
-        SystemHealth(
-            service="Strategy Service",
-            status="healthy",
-            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=45),
-            error_count=0
-        ),
-        SystemHealth(
-            service="Execution Service",
-            status="healthy",
-            last_heartbeat=datetime.now(timezone.utc) - timedelta(seconds=60),
-            error_count=0
-        )
-    ]
+    # Add database service
+    health_data.append(SystemHealth(
+        service="TimescaleDB",
+        status=db_status,
+        last_heartbeat=current_time,
+        error_count=0 if db_status == "healthy" else 1
+    ))
+    
+    # Check Redis connectivity
+    redis_status = "error"
+    if redis_client:
+        try:
+            await redis_client.ping()
+            redis_status = "healthy"
+        except Exception as e:
+            logger.error(f"Redis health check failed: {e}")
+            redis_status = "error"
+    
+    # Add Redis service
+    health_data.append(SystemHealth(
+        service="Redis",
+        status=redis_status,
+        last_heartbeat=current_time,
+        error_count=0 if redis_status == "healthy" else 1
+    ))
+    
+    # Read real service heartbeats from Redis
+    if redis_client:
+        try:
+            # Get all service heartbeat keys
+            heartbeat_keys = await redis_client.keys("service:*:heartbeat")
+            
+            if heartbeat_keys:
+                # Get all heartbeat values at once
+                heartbeat_values = await redis_client.mget(heartbeat_keys)
+                
+                for key, heartbeat_str in zip(heartbeat_keys, heartbeat_values):
+                    if not heartbeat_str:
+                        continue
+                        
+                    # Extract service name from key: service:name:heartbeat -> name
+                    service_name = key.split(":")[1]
+                    
+                    try:
+                        # Parse heartbeat timestamp
+                        last_heartbeat = datetime.fromisoformat(heartbeat_str.replace("Z", "+00:00"))
+                        
+                        # Calculate time since last heartbeat
+                        time_diff = (current_time - last_heartbeat).total_seconds()
+                        
+                        # Determine service status based on heartbeat age
+                        if time_diff < 60:  # Less than 1 minute
+                            status = "healthy"
+                        elif time_diff < 180:  # Less than 3 minutes
+                            status = "degraded"
+                        elif time_diff < 300:  # Less than 5 minutes
+                            status = "unhealthy"
+                        else:  # More than 5 minutes
+                            status = "dead"
+                        
+                        # Get error count (if any)
+                        error_count = 0
+                        try:
+                            error_key = f"service:{service_name}:errors"
+                            error_count_str = await redis_client.get(error_key)
+                            if error_count_str:
+                                error_count = int(error_count_str)
+                        except:
+                            pass
+                        
+                        # Format service name for display
+                        display_name = service_name.replace("_", " ").title()
+                        
+                        health_data.append(SystemHealth(
+                            service=display_name,
+                            status=status,
+                            last_heartbeat=last_heartbeat,
+                            error_count=error_count
+                        ))
+                        
+                    except Exception as e:
+                        logger.warning(f"Error parsing heartbeat for {service_name}: {e}")
+                        continue
+                        
+        except Exception as e:
+            logger.error(f"Error reading service heartbeats: {e}")
+    
+    # Sort by service name for consistent display
+    health_data.sort(key=lambda x: x.service)
     
     return health_data
 
