@@ -18,12 +18,33 @@ SYMBOL_MODE = os.getenv("SYMBOL_MODE", "custom")
 LEGACY_SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
 MAX_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "500"))
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/tradebot")
+DATA_SOURCE = os.getenv("DATA_SOURCE", "synthetic")
 
 # Will be populated by symbol manager
 SYMBOLS: List[str] = []
 
 # Will be initialized with previous close prices from database
 INITIAL_PRICES: Dict[str, float] = {}
+
+
+def get_table_name() -> str:
+    """Get the correct table name based on DATA_SOURCE environment variable"""
+    valid_sources = ['synthetic', 'alpaca', 'polygon', 'mock', 'test']
+    
+    if DATA_SOURCE not in valid_sources:
+        logger.warning(f"Unknown data source '{DATA_SOURCE}', defaulting to 'synthetic'")
+        return 'price_ticks_synthetic'
+    
+    # Map data sources to table names
+    table_mapping = {
+        'synthetic': 'price_ticks_synthetic',
+        'alpaca': 'price_ticks_alpaca', 
+        'polygon': 'price_ticks_polygon',
+        'mock': 'price_ticks_mock',
+        'test': 'price_ticks_test'
+    }
+    
+    return table_mapping.get(DATA_SOURCE, 'price_ticks_synthetic')
 
 
 async def generate_ticks(bus: MessageBus, interval: float = 1.0):
@@ -69,6 +90,7 @@ async def generate_ticks(bus: MessageBus, interval: float = 1.0):
 async def get_previous_close_prices(symbols: List[str]) -> Dict[str, float]:
     """Get the most recent close price for each symbol from the database."""
     prices = {}
+    table_name = get_table_name()
     
     try:
         # Connect to database
@@ -76,17 +98,30 @@ async def get_previous_close_prices(symbols: List[str]) -> Dict[str, float]:
         
         try:
             for symbol in symbols:
-                # Get the most recent close price for this symbol
+                # Try to get from the current data source table first
                 result = await conn.fetchrow(
-                    """
+                    f"""
                     SELECT close_price, price 
-                    FROM price_ticks 
+                    FROM {table_name}
                     WHERE symbol = $1 
                     ORDER BY timestamp DESC 
                     LIMIT 1
                     """,
                     symbol
                 )
+                
+                # If not found in current table, try the legacy table
+                if not result:
+                    result = await conn.fetchrow(
+                        """
+                        SELECT close_price, price 
+                        FROM price_ticks 
+                        WHERE symbol = $1 
+                        ORDER BY timestamp DESC 
+                        LIMIT 1
+                        """,
+                        symbol
+                    )
                 
                 if result:
                     # Use close_price if available, otherwise fall back to price
@@ -114,35 +149,28 @@ async def get_previous_close_prices(symbols: List[str]) -> Dict[str, float]:
 
 
 async def initialize_symbols():
-    """Initialize symbols based on configuration."""
+    """Initialize symbols for mock data generation - always use SYMBOLS env variable for mock data."""
     global SYMBOLS, INITIAL_PRICES
     
-    if SYMBOL_MODE == "custom":
-        SYMBOLS = LEGACY_SYMBOLS
-        logger.info("Using custom symbols: %s", SYMBOLS[:10])
-    else:
-        # Use symbol manager to get symbols
-        manager = SymbolManager()
-        all_symbols = await manager.initialize(SYMBOL_MODE)
-        
-        # Limit symbols to prevent overwhelming the system
-        SYMBOLS = all_symbols[:MAX_SYMBOLS]
-        logger.info("Loaded %d symbols in '%s' mode (limited to %d)", 
-                   len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
-        logger.info("First 10 symbols: %s", SYMBOLS[:10])
+    # For mock data generation, always use the SYMBOLS environment variable
+    # This ensures controlled, predictable data generation for development/testing
+    SYMBOLS = [symbol.strip().upper() for symbol in LEGACY_SYMBOLS]
+    
+    logger.info("🎭 Mock market data service configured for symbols: %s", SYMBOLS)
+    logger.info("📊 Using data source table: %s", get_table_name())
     
     # Initialize prices using previous close prices from database
     INITIAL_PRICES = await get_previous_close_prices(SYMBOLS)
-    logger.info("Initialized prices for %d symbols using previous close prices", len(INITIAL_PRICES))
+    logger.info("💰 Initialized prices for %d symbols", len(INITIAL_PRICES))
 
 
 async def main():
-    logger.info("Market data service starting...")
+    logger.info("🚀 Mock market data service starting...")
     
     # Initialize symbols first
     await initialize_symbols()
     
-    logger.info("Market data service ready for %d symbols", len(SYMBOLS))
+    logger.info("✅ Mock market data service ready for %d symbols", len(SYMBOLS))
     bus = MessageBus()
     await bus.connect()
     await generate_ticks(bus)
@@ -152,4 +180,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Market data service stopped") 
+        logger.info("🛑 Mock market data service stopped") 

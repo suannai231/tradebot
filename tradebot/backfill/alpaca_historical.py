@@ -225,17 +225,21 @@ async def init_database(pool: asyncpg.Pool):
 
 
 async def initialize_symbols():
-    """Initialize symbols based on configuration."""
+    """Initialize symbols for backfill - always fetch ALL symbols regardless of SYMBOL_MODE."""
     global SYMBOLS
     
-    # Use symbol manager for all modes including custom
+    # Force 'all' mode for backfill to get comprehensive historical data
+    backfill_mode = "all"
+    logger.info("Backfill mode: ALWAYS fetching ALL symbols (ignoring SYMBOL_MODE=%s)", SYMBOL_MODE)
+    
+    # Use symbol manager in 'all' mode
     manager = SymbolManager()
-    all_symbols = await manager.initialize(SYMBOL_MODE)
+    all_symbols = await manager.initialize(backfill_mode)
     
     # Limit symbols for backfill to respect rate limits
     SYMBOLS = all_symbols[:MAX_BACKFILL_SYMBOLS]
-    logger.info("Loaded %d symbols in '%s' mode for backfill (limited to %d)", 
-               len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
+    logger.info("Loaded %d symbols for comprehensive backfill (limited to %d)", 
+               len(all_symbols), len(SYMBOLS))
 
 
 async def detect_and_store_splits(pool: asyncpg.Pool, symbol: str, raw_bars: List[dict], split_bars: List[dict]):

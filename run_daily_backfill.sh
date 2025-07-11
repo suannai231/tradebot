@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Daily Backfill Script
-# This script runs the comprehensive backfill process and logs the results
+# This script runs the comprehensive backfill process for ALL symbols and logs the results
+# Note: Backfill always fetches ALL symbols regardless of SYMBOL_MODE setting
 
 # Set the project directory
 PROJECT_DIR="/Users/yue.yin/Library/CloudStorage/GoogleDrive-suannai231@gmail.com/My Drive/Projects/Trade"

@@ -3,6 +3,8 @@
 ## Overview
 Your daily backfill is now scheduled using macOS **launchd** (instead of cron) to run at **9:00 AM daily**.
 
+**Important**: The backfill service **always fetches ALL available symbols** from Alpaca API, regardless of your `SYMBOL_MODE` setting in `.env`. This ensures comprehensive historical data for backtesting and analysis.
+
 ## 🔋 Sleep/Wake Behavior
 
 ### Will it run when Mac is sleeping?
@@ -82,6 +84,23 @@ tail -f logs/backfill_$(date +%Y%m%d)_*.log
 - **Script**: `./run_daily_backfill.sh`
 - **Management**: `./manage_backfill_schedule.sh`
 - **Logs**: `./logs/backfill_*.log`
+
+## 📊 Symbol Coverage
+
+### Backfill vs Real-time Trading:
+- **Real-time Trading**: Uses `SYMBOL_MODE` setting (custom, popular, all, etc.)
+- **Backfill Service**: **ALWAYS uses "all" mode** - fetches ~6,463 tradeable symbols
+- **Rationale**: Comprehensive historical data needed for backtesting, regardless of trading focus
+
+### What Gets Backfilled:
+✅ **All US equity symbols** from NASDAQ, NYSE, AMEX  
+✅ **Filtered for quality**: Active, tradeable, proper symbols only  
+✅ **OHLCV data**: Open, High, Low, Close, Volume + metadata  
+✅ **Stock splits**: Automatically detected and stored  
+✅ **5-year history**: Up to 5 years of daily bars  
+
+### Current Coverage:
+Based on latest run: **6,463 symbols** (filtered from 8,125 total assets)
 
 ## 🚨 Troubleshooting
 
