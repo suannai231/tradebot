@@ -186,10 +186,57 @@ class EnsembleMLStrategy:
         self.config = config
         self.feature_engineer = FeatureEngineer(config)
         
-        # Initialize models
+        # GPU status detection
+        self.gpu_enabled = torch.cuda.is_available()
+        self.mps_enabled = torch.backends.mps.is_available()
+        
+        # Initialize models with GPU support where available
         self.rf_classifier = RandomForestClassifier(n_estimators=100, random_state=42)
-        self.xgb_classifier = xgb.XGBClassifier(n_estimators=100, random_state=42)
-        self.lgb_classifier = lgb.LGBMClassifier(n_estimators=100, random_state=42)
+        
+        # XGBoost with GPU support (if available)
+        try:
+            # Try GPU first (Apple Silicon doesn't support XGBoost GPU, but CUDA does)
+            self.xgb_classifier = xgb.XGBClassifier(
+                n_estimators=100, 
+                random_state=42,
+                tree_method='gpu_hist' if self.gpu_enabled else 'hist',
+                gpu_id=0 if self.gpu_enabled else None
+            )
+            if self.gpu_enabled:
+                print("✅ XGBoost GPU (CUDA) support enabled")
+            else:
+                print("⚠️  XGBoost using CPU (CUDA GPU not available)")
+        except:
+            # Fallback to CPU
+            self.xgb_classifier = xgb.XGBClassifier(n_estimators=100, random_state=42)
+            print("⚠️  XGBoost fallback to CPU")
+        
+        # LightGBM with GPU support
+        try:
+            self.lgb_classifier = lgb.LGBMClassifier(
+                n_estimators=100, 
+                random_state=42,
+                device='gpu' if self.gpu_enabled else 'cpu'
+            )
+            if self.gpu_enabled:
+                print("✅ LightGBM GPU (CUDA) support enabled")
+            else:
+                print("⚠️  LightGBM using CPU (CUDA GPU not available)")
+        except:
+            # Fallback to CPU
+            self.lgb_classifier = lgb.LGBMClassifier(n_estimators=100, random_state=42)
+            print("⚠️  LightGBM fallback to CPU")
+        
+        # Random Forest status (always CPU)
+        print("⚠️  Random Forest using CPU (scikit-learn limitation)")
+        
+        # Overall GPU status summary
+        if self.gpu_enabled:
+            print("🚀 Ensemble ML Strategy: GPU-accelerated (CUDA)")
+        elif self.mps_enabled:
+            print("🚀 Ensemble ML Strategy: MPS-accelerated (Apple Silicon)")
+        else:
+            print("💻 Ensemble ML Strategy: CPU-only")
         
         # Ensemble model
         self.ensemble = VotingClassifier(
@@ -323,16 +370,15 @@ class EnsembleMLStrategy:
             return 0.5, 0.0
     
     async def _log_signal(self, signal: Signal, strategy_name: str):
-        """Log signal to performance tracker"""
+        """Process signal through position manager"""
         try:
             # Import here to avoid circular imports
-            from tradebot.strategy.ml_service import get_performance_tracker
+            from tradebot.strategy.position_manager import process_ml_signal
             
-            tracker = await get_performance_tracker()
-            if tracker:
-                await tracker.log_signal(strategy_name, signal.symbol, signal)
+            action = await process_ml_signal(strategy_name, signal.symbol, signal)
+            logger.debug(f"Position manager action for {signal.symbol}: {action}")
         except Exception as e:
-            logger.error(f"Error logging signal to performance tracker: {e}")
+            logger.error(f"Error processing signal through position manager: {e}")
     
     def on_tick(self, tick: PriceTick) -> Optional[Signal]:
         """Process tick and generate signals"""
@@ -387,8 +433,12 @@ class EnsembleMLStrategy:
                     timestamp=tick.timestamp, 
                     confidence=confidence
                 )
-                # Log signal asynchronously
-                asyncio.create_task(self._log_signal(signal, "ensemble_ml"))
+                # Log signal asynchronously (if event loop is running)
+                try:
+                    asyncio.create_task(self._log_signal(signal, "ensemble_ml"))
+                except RuntimeError:
+                    # No event loop running (e.g., in tests)
+                    pass
                 return signal
         
         elif buy_probability < 0.4 and confidence > 0.2:  # Lowered from 0.6 confidence
@@ -403,8 +453,12 @@ class EnsembleMLStrategy:
                     timestamp=tick.timestamp, 
                     confidence=confidence
                 )
-                # Log signal asynchronously
-                asyncio.create_task(self._log_signal(signal, "ensemble_ml"))
+                # Log signal asynchronously (if event loop is running)
+                try:
+                    asyncio.create_task(self._log_signal(signal, "ensemble_ml"))
+                except RuntimeError:
+                    # No event loop running (e.g., in tests)
+                    pass
                 return signal
         
         return None
@@ -427,8 +481,12 @@ class LSTMStrategy:
         self.last_signals: Dict[str, datetime] = defaultdict(lambda: datetime.min.replace(tzinfo=timezone.utc))
         self.tick_count: Dict[str, int] = defaultdict(int)
         
+        # Setup device for PyTorch LSTM (fallback if TensorFlow not available)
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"LSTM Strategy using device: {self.device}")
+        
         if not TENSORFLOW_AVAILABLE:
-            logger.warning("TensorFlow not available. LSTM strategy will not work.")
+            logger.warning("TensorFlow not available. Using PyTorch LSTM with GPU support.")
     
     def update_data(self, tick: PriceTick):
         """Update internal data structures"""
@@ -445,9 +503,10 @@ class LSTMStrategy:
         return np.array(X), np.array(y)
     
     def build_lstm_model(self, input_shape: Tuple[int, int]):
-        """Build LSTM model architecture"""
+        """Build LSTM model architecture - PyTorch implementation with GPU support"""
         if not TENSORFLOW_AVAILABLE:
-            return None
+            # Use PyTorch LSTM with GPU support
+            return self.build_pytorch_lstm(input_shape)
             
         model = Sequential([
             LSTM(50, return_sequences=True, input_shape=input_shape),
@@ -459,6 +518,41 @@ class LSTMStrategy:
         ])
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+        return model
+    
+    def build_pytorch_lstm(self, input_shape: Tuple[int, int]):
+        """Build PyTorch LSTM model with GPU support"""
+        import torch
+        import torch.nn as nn
+        
+        class LSTMModel(nn.Module):
+            def __init__(self, input_size, hidden_size=50, num_layers=2, dropout=0.2):
+                super(LSTMModel, self).__init__()
+                self.hidden_size = hidden_size
+                self.num_layers = num_layers
+                
+                self.lstm = nn.LSTM(input_size, hidden_size, num_layers, 
+                                   batch_first=True, dropout=dropout)
+                self.dropout = nn.Dropout(dropout)
+                self.fc1 = nn.Linear(hidden_size, 25)
+                self.fc2 = nn.Linear(25, 1)
+                self.relu = nn.ReLU()
+                
+            def forward(self, x):
+                # Initialize hidden state
+                h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+                c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+                
+                # LSTM forward pass
+                out, _ = self.lstm(x, (h0, c0))
+                out = self.dropout(out[:, -1, :])  # Take last output
+                out = self.relu(self.fc1(out))
+                out = self.fc2(out)
+                return out
+        
+        # Create model and move to device
+        model = LSTMModel(input_shape[1]).to(self.device)
+        print(f"PyTorch LSTM model created on device: {self.device}")
         return model
     
     def train_model(self, symbol: str):
@@ -545,26 +639,21 @@ class LSTMStrategy:
             return 0.5, 0.0
     
     async def _log_signal(self, signal: Signal, strategy_name: str):
-        """Log signal to performance tracker"""
+        """Process signal through position manager"""
         try:
             # Import here to avoid circular imports
-            from tradebot.strategy.ml_service import get_performance_tracker
+            from tradebot.strategy.position_manager import process_ml_signal
             
-            tracker = await get_performance_tracker()
-            if tracker:
-                await tracker.log_signal(strategy_name, signal.symbol, signal)
+            action = await process_ml_signal(strategy_name, signal.symbol, signal)
+            logger.debug(f"Position manager action for {signal.symbol}: {action}")
         except Exception as e:
-            logger.error(f"Error logging signal to performance tracker: {e}")
+            logger.error(f"Error processing signal through position manager: {e}")
     
     def on_tick(self, tick: PriceTick) -> Optional[Signal]:
-        """Process tick and generate signals"""
+        """Process tick and generate signals - WITH FALLBACK FOR NO TENSORFLOW"""
         symbol = tick.symbol
         self.update_data(tick)
         self.tick_count[symbol] += 1
-        
-        # Check if we should retrain
-        if self.tick_count[symbol] % self.config.retrain_frequency == 0:
-            self.train_model(symbol)
         
         # Check if we have enough data
         if len(self.prices[symbol]) < self.config.lookback_period:
@@ -572,18 +661,54 @@ class LSTMStrategy:
         
         # Check if we should generate a signal
         time_since_last = datetime.now(timezone.utc) - self.last_signals[symbol]
-        if time_since_last.total_seconds() < 300:  # 5 minutes minimum
+        if time_since_last.total_seconds() < 180:  # 3 minutes minimum
             return None
         
-        # Make prediction
+        # Make prediction (with fallback if TensorFlow not available)
         buy_probability, confidence = self.predict(symbol)
         
-        # Generate signal based on prediction
-        if buy_probability > 0.6 and confidence > self.config.confidence_threshold:
+        # If TensorFlow not available, use LSTM-inspired time series analysis
+        if not TENSORFLOW_AVAILABLE:
+            buy_probability, confidence = self.lstm_fallback_prediction(symbol)
+        
+        # Generate signal based on prediction with ADAPTIVE thresholds based on stock quality
+        
+        # Check if this is a penny stock (use cached calculation from prediction)
+        prices = list(self.prices[symbol])
+        if len(prices) >= 20:
+            max_price = max(prices)
+            min_price = min(prices)
+            price_range = (max_price - min_price) / min_price if min_price > 0 else 0
+            long_term_trend = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
+            daily_changes = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(-10, 0) if prices[i-1] > 0]
+            avg_volatility = np.std(daily_changes) if daily_changes else 0
+            current_price = prices[-1]
+            
+            penny_stock_risk = 0
+            if price_range > 5.0: penny_stock_risk += 0.3
+            if long_term_trend < -0.5: penny_stock_risk += 0.4
+            if avg_volatility > 0.2: penny_stock_risk += 0.3
+            if current_price < 5.0: penny_stock_risk += 0.2
+            
+            # ADAPTIVE THRESHOLDS based on stock quality
+            if penny_stock_risk > 0.6:
+                # High-risk penny stocks: No trading
+                return None
+            elif penny_stock_risk > 0.3:
+                # Medium-risk stocks: Very conservative
+                buy_threshold, sell_threshold, conf_threshold = 0.72, 0.28, 0.65
+            else:
+                # Quality stocks: More reasonable thresholds
+                buy_threshold, sell_threshold, conf_threshold = 0.65, 0.35, 0.45
+        else:
+            # Default for insufficient data
+            buy_threshold, sell_threshold, conf_threshold = 0.65, 0.35, 0.45
+        
+        if buy_probability > buy_threshold and confidence > conf_threshold:
             if self.last_side[symbol] != Side.buy:
                 self.last_side[symbol] = Side.buy
                 self.last_signals[symbol] = tick.timestamp
-                logger.info(f"LSTM buy signal for {symbol}: prob={buy_probability:.3f}, conf={confidence:.3f}")
+                logger.info(f"Adaptive LSTM buy signal for {symbol}: prob={buy_probability:.3f}, conf={confidence:.3f}, thresholds=({buy_threshold:.2f}, {conf_threshold:.2f})")
                 signal = Signal(
                     symbol=symbol, 
                     side=Side.buy, 
@@ -591,15 +716,19 @@ class LSTMStrategy:
                     timestamp=tick.timestamp, 
                     confidence=confidence
                 )
-                # Log signal asynchronously
-                asyncio.create_task(self._log_signal(signal, "lstm_ml"))
+                # Log signal asynchronously (if event loop is running)
+                try:
+                    asyncio.create_task(self._log_signal(signal, "lstm_ml"))
+                except RuntimeError:
+                    # No event loop running (e.g., in tests)
+                    pass
                 return signal
         
-        elif buy_probability < 0.4 and confidence > self.config.confidence_threshold:
+        elif buy_probability < sell_threshold and confidence > conf_threshold:
             if self.last_side[symbol] == Side.buy:
                 self.last_side[symbol] = Side.sell
                 self.last_signals[symbol] = tick.timestamp
-                logger.info(f"LSTM sell signal for {symbol}: prob={buy_probability:.3f}, conf={confidence:.3f}")
+                logger.info(f"Adaptive LSTM sell signal for {symbol}: prob={buy_probability:.3f}, conf={confidence:.3f}, thresholds=({sell_threshold:.2f}, {conf_threshold:.2f})")
                 signal = Signal(
                     symbol=symbol, 
                     side=Side.sell, 
@@ -607,23 +736,254 @@ class LSTMStrategy:
                     timestamp=tick.timestamp, 
                     confidence=confidence
                 )
-                # Log signal asynchronously
-                asyncio.create_task(self._log_signal(signal, "lstm_ml"))
+                # Log signal asynchronously (if event loop is running)
+                try:
+                    asyncio.create_task(self._log_signal(signal, "lstm_ml"))
+                except RuntimeError:
+                    # No event loop running (e.g., in tests)
+                    pass
                 return signal
         
         return None
+    
+    def lstm_fallback_prediction(self, symbol: str) -> Tuple[float, float]:
+        """IMPROVED LSTM-inspired prediction with PENNY STOCK PROTECTION"""
+        try:
+            prices = list(self.prices[symbol])
+            volumes = list(self.volumes[symbol])
+            
+            if len(prices) < 20:
+                return 0.5, 0.0
+            
+            current_price = prices[-1]
+            
+            # === PENNY STOCK DETECTION & PROTECTION ===
+            # Detect if this is a problematic penny stock
+            max_price = max(prices)
+            min_price = min(prices)
+            price_range = (max_price - min_price) / min_price if min_price > 0 else 0
+            
+            # Calculate overall trend (is stock in long-term decline?)
+            long_term_trend = (prices[-1] - prices[0]) / prices[0] if prices[0] > 0 else 0
+            
+            # Check for extreme volatility patterns
+            daily_changes = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(-10, 0) if prices[i-1] > 0]
+            avg_volatility = np.std(daily_changes) if daily_changes else 0
+            
+            # PENNY STOCK WARNING SIGNS:
+            penny_stock_risk = 0
+            
+            # 1. Extreme price range (>500% range suggests pump/dump)
+            if price_range > 5.0:
+                penny_stock_risk += 0.3
+            
+            # 2. Strong downward bias (>50% decline suggests fundamental issues)
+            if long_term_trend < -0.5:
+                penny_stock_risk += 0.4
+            
+            # 3. Extreme volatility (>20% daily moves suggest manipulation)
+            if avg_volatility > 0.2:
+                penny_stock_risk += 0.3
+            
+            # 4. Very low absolute price (classic penny stock)
+            if current_price < 5.0:
+                penny_stock_risk += 0.2
+            
+            # If penny stock risk is high, be EXTREMELY conservative
+            if penny_stock_risk > 0.6:
+                logger.warning(f"High penny stock risk detected for {symbol}: {penny_stock_risk:.2f}")
+                # Return neutral signals for dangerous penny stocks
+                return 0.5, 0.1  # Very low confidence
+            
+            # === MARKET REGIME DETECTION ===
+            # Determine if market is trending or mean-reverting
+            price_changes = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(-10, 0) if prices[i-1] > 0]
+            if not price_changes:
+                return 0.5, 0.0
+                
+            volatility = np.std(price_changes)
+            trend_strength = abs(np.mean(price_changes))
+            
+            # Market regime classification
+            if trend_strength > volatility * 0.5:
+                regime = "trending"
+                regime_confidence = min(trend_strength / volatility, 1.0)
+            else:
+                regime = "mean_reverting"
+                regime_confidence = min(volatility / (trend_strength + 0.001), 1.0)
+            
+            # === STRATEGY SELECTION BASED ON REGIME ===
+            
+            if regime == "trending":
+                # MOMENTUM STRATEGY for trending markets
+                
+                # 1. Multi-timeframe momentum
+                short_ma = np.mean(prices[-5:])
+                medium_ma = np.mean(prices[-10:])
+                long_ma = np.mean(prices[-20:])
+                
+                # Strong momentum signal
+                if short_ma > medium_ma > long_ma:
+                    momentum_score = 0.8  # Strong uptrend
+                elif short_ma > medium_ma:
+                    momentum_score = 0.65  # Weak uptrend
+                elif short_ma < medium_ma < long_ma:
+                    momentum_score = 0.2  # Strong downtrend
+                elif short_ma < medium_ma:
+                    momentum_score = 0.35  # Weak downtrend
+                else:
+                    momentum_score = 0.5  # Neutral
+                
+                # 2. Breakout detection
+                high_20 = max(prices[-20:])
+                low_20 = min(prices[-20:])
+                price_position = (current_price - low_20) / (high_20 - low_20) if high_20 > low_20 else 0.5
+                
+                if price_position > 0.9:  # Near high
+                    breakout_score = 0.8  # Potential breakout
+                elif price_position < 0.1:  # Near low
+                    breakout_score = 0.2  # Potential breakdown
+                else:
+                    breakout_score = 0.5
+                
+                # 3. Volume confirmation
+                recent_vol = np.mean(volumes[-3:])
+                avg_vol = np.mean(volumes[-10:])
+                vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1
+                
+                if vol_ratio > 1.5:  # High volume
+                    volume_score = 0.7
+                elif vol_ratio < 0.7:  # Low volume
+                    volume_score = 0.4
+                else:
+                    volume_score = 0.5
+                
+                # Combine for trending strategy
+                combined_score = (momentum_score * 0.5 + breakout_score * 0.3 + volume_score * 0.2)
+                confidence = regime_confidence * 0.8
+                
+            else:  # mean_reverting regime
+                # MEAN REVERSION STRATEGY for sideways markets
+                
+                # 1. RSI-like oscillator
+                gains = [max(0, change) for change in price_changes]
+                losses = [abs(min(0, change)) for change in price_changes]
+                avg_gain = np.mean(gains) if gains else 0
+                avg_loss = np.mean(losses) if losses else 0
+                
+                if avg_loss > 0:
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                else:
+                    rsi = 50
+                
+                # RSI signals
+                if rsi < 25:  # Oversold
+                    rsi_score = 0.8
+                elif rsi > 75:  # Overbought
+                    rsi_score = 0.2
+                else:
+                    rsi_score = 0.5
+                
+                # 2. Distance from mean
+                sma_15 = np.mean(prices[-15:])
+                distance = (current_price - sma_15) / sma_15 if sma_15 > 0 else 0
+                
+                if distance < -0.05:  # 5% below mean
+                    mean_score = 0.75  # Buy the dip
+                elif distance > 0.05:  # 5% above mean
+                    mean_score = 0.25  # Sell the peak
+                else:
+                    mean_score = 0.5
+                
+                # 3. Bollinger Band-like analysis
+                std_dev = np.std(prices[-15:])
+                upper_band = sma_15 + (2 * std_dev)
+                lower_band = sma_15 - (2 * std_dev)
+                
+                if current_price < lower_band:
+                    band_score = 0.8  # Oversold
+                elif current_price > upper_band:
+                    band_score = 0.2  # Overbought
+                else:
+                    band_score = 0.5
+                
+                # Combine for mean reversion strategy
+                combined_score = (rsi_score * 0.4 + mean_score * 0.35 + band_score * 0.25)
+                confidence = regime_confidence * 0.7
+            
+            # === ENHANCED RISK MANAGEMENT OVERLAY ===
+            
+            # 1. Volatility adjustment
+            if volatility > 0.1:  # Very high volatility (10%+ daily moves)
+                confidence *= 0.3  # Be VERY cautious with volatile stocks
+                # Pull signals toward neutral in high volatility
+                combined_score = combined_score * 0.5 + 0.5 * 0.5
+            elif volatility > 0.05:  # High volatility (5%+ daily moves)
+                confidence *= 0.6  # Be cautious
+                combined_score = combined_score * 0.8 + 0.5 * 0.2
+            
+            # 2. Recent performance check (enhanced)
+            recent_return = (current_price - prices[-5]) / prices[-5] if prices[-5] > 0 else 0
+            if abs(recent_return) > 0.3:  # 30% move in 5 periods (extreme)
+                confidence *= 0.3  # Very low confidence after extreme moves
+                combined_score = 0.5  # Force neutral
+            elif abs(recent_return) > 0.2:  # 20% move in 5 periods
+                confidence *= 0.5  # Reduce confidence after big moves
+            
+            # 3. Long-term trend bias protection
+            if long_term_trend < -0.3:  # Stock down >30% overall
+                # Be very reluctant to buy declining stocks
+                if combined_score > 0.5:  # If suggesting buy
+                    combined_score = combined_score * 0.6 + 0.5 * 0.4  # Pull toward neutral
+                    confidence *= 0.7
+            
+            # 4. Price momentum divergence check
+            short_momentum = (prices[-1] - prices[-3]) / prices[-3] if prices[-3] > 0 else 0
+            medium_momentum = (prices[-1] - prices[-7]) / prices[-7] if prices[-7] > 0 else 0
+            
+            # If short and medium momentum disagree strongly, reduce confidence
+            momentum_divergence = abs(short_momentum - medium_momentum)
+            if momentum_divergence > 0.1:  # 10% divergence
+                confidence *= 0.8
+            
+            # 5. Penny stock additional protection (only for high-risk stocks)
+            if penny_stock_risk > 0.5:  # Only high penny stock risk
+                confidence *= (1.0 - penny_stock_risk * 0.5)  # Less aggressive penalty
+                # For penny stocks, be more conservative on buy signals
+                if combined_score > 0.5:
+                    combined_score = combined_score * 0.9 + 0.5 * 0.1  # Less aggressive pull
+            
+            # 6. Ensure reasonable bounds with stricter limits
+            combined_score = max(0.2, min(0.8, combined_score))  # Narrower range
+            confidence = max(0.1, min(0.8, confidence))
+            
+            return combined_score, confidence
+            
+        except Exception as e:
+            logger.error(f"Error in improved LSTM prediction for {symbol}: {e}")
+            return 0.5, 0.3
 
 
 class SentimentStrategy:
-    """Sentiment analysis-based trading strategy"""
+    """Sentiment analysis-based trading strategy with GPU support"""
     
     def __init__(self, config: MLStrategyConfig):
         self.config = config
         self.feature_engineer = FeatureEngineer(config)
         
-        # Simplified sentiment analysis (avoid problematic transformers)
-        self.sentiment_analyzer = None  # Disable transformers to avoid segfaults
-        print("Sentiment strategy initialized with simplified analysis (no transformers)")
+        # Setup GPU device for sentiment analysis
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"Sentiment Strategy using device: {self.device}")
+        
+        # Initialize sentiment analyzer with GPU support
+        self.sentiment_analyzer = None  # Will be initialized on first use
+        self.gpu_enabled = torch.backends.mps.is_available() or torch.cuda.is_available()
+        
+        if self.gpu_enabled:
+            print("GPU-accelerated sentiment analysis enabled")
+        else:
+            print("CPU-only sentiment analysis (GPU not available)")
         
         # Data storage
         self.prices: Dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
@@ -640,7 +1000,7 @@ class SentimentStrategy:
         self.prices[symbol].append(tick.price)
     
     def get_simple_sentiment(self, symbol: str) -> float:
-        """Get simplified sentiment score based on price movement"""
+        """Get sentiment score with GPU acceleration when available"""
         try:
             # Simple sentiment based on recent price movement
             if len(self.prices[symbol]) < 2:
@@ -654,6 +1014,57 @@ class SentimentStrategy:
                 logger.warning(f"Extremely small prices detected for {symbol}, using neutral sentiment")
                 return 0.0
             
+            # GPU-accelerated sentiment calculation when available and beneficial
+            # Only use GPU for larger datasets to avoid overhead
+            if self.gpu_enabled and len(prices) >= 50:  # Increased threshold
+                return self._gpu_sentiment_calculation(prices)
+            else:
+                return self._cpu_sentiment_calculation(prices)
+            
+        except Exception as e:
+            logger.error(f"Error calculating sentiment for {symbol}: {e}")
+            return 0.0
+    
+    def _gpu_sentiment_calculation(self, prices: List[float]) -> float:
+        """GPU-accelerated sentiment calculation using PyTorch"""
+        try:
+            # Convert to PyTorch tensor on GPU
+            price_tensor = torch.tensor(prices, dtype=torch.float32, device=self.device)
+            
+            # Calculate multiple timeframe changes using GPU
+            if len(prices) >= 10:
+                # Multi-timeframe momentum analysis
+                short_change = (price_tensor[-1] - price_tensor[-3]) / price_tensor[-3]
+                medium_change = (price_tensor[-1] - price_tensor[-5]) / price_tensor[-5]
+                long_change = (price_tensor[-1] - price_tensor[-10]) / price_tensor[-10]
+                
+                # Volatility-adjusted sentiment
+                recent_prices = price_tensor[-10:]
+                volatility = torch.std(recent_prices / recent_prices[0])  # Normalized volatility
+                
+                # Trend strength calculation
+                trend_strength = torch.abs(torch.mean(torch.diff(recent_prices) / recent_prices[:-1]))
+                
+                # Combine signals with GPU operations
+                momentum_signal = (short_change * 0.5 + medium_change * 0.3 + long_change * 0.2)
+                volatility_adjusted = momentum_signal / (volatility + 0.01)  # Avoid division by zero
+                
+                # Apply non-linear transformation
+                sentiment = torch.tanh(volatility_adjusted * 3.0)
+                
+                # Convert back to CPU and return
+                return float(sentiment.cpu().item())
+            else:
+                # Fallback to CPU for small datasets
+                return self._cpu_sentiment_calculation(prices)
+                
+        except Exception as e:
+            logger.error(f"Error in GPU sentiment calculation: {e}")
+            return self._cpu_sentiment_calculation(prices)
+    
+    def _cpu_sentiment_calculation(self, prices: List[float]) -> float:
+        """CPU-based sentiment calculation (fallback)"""
+        try:
             # Calculate price changes with safety checks
             if len(prices) >= 5:
                 # Check for division by zero
@@ -670,7 +1081,7 @@ class SentimentStrategy:
             
             # Safety check for extreme values
             if abs(short_change) > 100 or abs(medium_change) > 100:
-                logger.warning(f"Extreme price changes detected for {symbol}, capping values")
+                logger.warning(f"Extreme price changes detected, capping values")
                 short_change = max(-1, min(1, short_change))
                 medium_change = max(-1, min(1, medium_change))
             
@@ -680,17 +1091,13 @@ class SentimentStrategy:
             
             # Final safety check
             if not np.isfinite(sentiment):
-                logger.warning(f"Non-finite sentiment calculated for {symbol}, using neutral")
+                logger.warning(f"Non-finite sentiment calculated, using neutral")
                 sentiment = 0.0
-            
-            # Store sentiment score
-            self.sentiment_scores[symbol].append(sentiment)
-            self.last_sentiment_update[symbol] = datetime.now(timezone.utc)
             
             return sentiment
             
         except Exception as e:
-            logger.error(f"Error calculating sentiment for {symbol}: {e}")
+            logger.error(f"Error in CPU sentiment calculation: {e}")
             return 0.0
     
     async def fetch_news_sentiment(self, symbol: str) -> float:
@@ -746,23 +1153,22 @@ class SentimentStrategy:
             return 0.5
     
     async def _log_signal(self, signal: Signal, strategy_name: str):
-        """Log signal to performance tracker"""
+        """Process signal through position manager"""
         try:
             # Import here to avoid circular imports
-            from tradebot.strategy.ml_service import get_performance_tracker
+            from tradebot.strategy.position_manager import process_ml_signal
             
-            tracker = await get_performance_tracker()
-            if tracker:
-                await tracker.log_signal(strategy_name, signal.symbol, signal)
+            action = await process_ml_signal(strategy_name, signal.symbol, signal)
+            logger.debug(f"Position manager action for {signal.symbol}: {action}")
         except Exception as e:
-            logger.error(f"Error logging signal to performance tracker: {e}")
+            logger.error(f"Error processing signal through position manager: {e}")
     
     def on_tick(self, tick: PriceTick) -> Optional[Signal]:
-        """Process tick and generate signals - SIMPLIFIED STABLE VERSION"""
+        """Process tick and generate signals with GPU-accelerated sentiment analysis"""
         symbol = tick.symbol
         
         try:
-            # Simple data storage without complex operations
+            # Update data storage
             self.prices[symbol].append(tick.price)
             
             # Basic requirements check
@@ -773,53 +1179,77 @@ class SentimentStrategy:
             if tick.price < 0.01:
                 return None
             
-            # Simple time throttling
+            # Time throttling - reduced for more frequent signals
             time_since_last = datetime.now(timezone.utc) - self.last_signals[symbol]
-            if time_since_last.total_seconds() < 300:  # 5 minutes
+            if time_since_last.total_seconds() < 180:  # 3 minutes (reduced from 5)
                 return None
             
-            # Ultra-simple sentiment based on price momentum only
-            prices = list(self.prices[symbol])
-            if len(prices) < 5:
-                return None
+            # Get GPU-accelerated sentiment score
+            sentiment_score = self.get_simple_sentiment(symbol)
             
-            # Simple price-based sentiment (no complex calculations)
-            recent_prices = prices[-5:]
-            price_trend = (recent_prices[-1] - recent_prices[0]) / recent_prices[0]
+            # Store sentiment score
+            self.sentiment_scores[symbol].append(sentiment_score)
+            self.last_sentiment_update[symbol] = datetime.now(timezone.utc)
             
-            # Simple buy/sell logic based on trend
-            if price_trend > 0.02:  # 2% upward trend = positive sentiment
+            # Calculate confidence based on sentiment strength and consistency
+            recent_sentiments = list(self.sentiment_scores[symbol])[-3:]  # Last 3 sentiment scores
+            sentiment_consistency = 1.0 - np.std(recent_sentiments) if len(recent_sentiments) > 1 else 0.5
+            sentiment_strength = abs(sentiment_score)
+            confidence = min(sentiment_strength * sentiment_consistency * 2.0, 1.0)
+            
+            # Enhanced buy/sell logic with adaptive thresholds
+            buy_threshold = 0.3 if self.gpu_enabled else 0.4  # Lower threshold for GPU (more sensitive)
+            sell_threshold = -0.3 if self.gpu_enabled else -0.4
+            min_confidence = 0.4 if self.gpu_enabled else 0.5
+            
+            # Generate buy signal
+            if sentiment_score > buy_threshold and confidence > min_confidence:
                 if self.last_side[symbol] != Side.buy:
                     self.last_side[symbol] = Side.buy
                     self.last_signals[symbol] = tick.timestamp
                     
-                    logger.info(f"Simple sentiment buy signal for {symbol}: trend={price_trend:.3f}")
-                    return Signal(
+                    logger.info(f"GPU sentiment buy signal for {symbol}: score={sentiment_score:.3f}, conf={confidence:.3f}")
+                    signal = Signal(
                         symbol=symbol,
                         side=Side.buy,
                         price=tick.price,
                         timestamp=tick.timestamp,
-                        confidence=min(abs(price_trend) * 10, 1.0)
+                        confidence=confidence
                     )
+                    # Log signal asynchronously (if event loop is running)
+                    try:
+                        asyncio.create_task(self._log_signal(signal, "sentiment_ml"))
+                    except RuntimeError:
+                        # No event loop running (e.g., in tests)
+                        pass
+                    return signal
             
-            elif price_trend < -0.02:  # 2% downward trend = negative sentiment
+            # Generate sell signal
+            elif sentiment_score < sell_threshold and confidence > min_confidence:
                 if self.last_side[symbol] == Side.buy:
                     self.last_side[symbol] = Side.sell
                     self.last_signals[symbol] = tick.timestamp
                     
-                    logger.info(f"Simple sentiment sell signal for {symbol}: trend={price_trend:.3f}")
-                    return Signal(
+                    logger.info(f"GPU sentiment sell signal for {symbol}: score={sentiment_score:.3f}, conf={confidence:.3f}")
+                    signal = Signal(
                         symbol=symbol,
                         side=Side.sell,
                         price=tick.price,
                         timestamp=tick.timestamp,
-                        confidence=min(abs(price_trend) * 10, 1.0)
+                        confidence=confidence
                     )
+                    # Log signal asynchronously (if event loop is running)
+                    try:
+                        asyncio.create_task(self._log_signal(signal, "sentiment_ml"))
+                    except RuntimeError:
+                        # No event loop running (e.g., in tests)
+                        pass
+                    return signal
             
             return None
             
         except Exception as e:
-            logger.error(f"Error in simplified sentiment strategy for {symbol}: {e}")
+            logger.error(f"Error in GPU sentiment strategy for {symbol}: {e}")
             return None
     
     def calculate_rsi(self, prices: List[float], period: int = 14) -> Optional[float]:

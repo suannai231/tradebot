@@ -1230,6 +1230,14 @@ class KLineChart {
         const loadingDiv = document.getElementById('kline-loading');
         loadingDiv.style.display = 'block';
 
+        // Add timeout protection to ensure loading spinner is always hidden
+        const loadingTimeout = setTimeout(() => {
+            console.warn('K-line chart loading timed out, hiding spinner');
+            if (loadingDiv) {
+                loadingDiv.style.display = 'none';
+            }
+        }, 15000); // 15 second timeout
+
         // Helper: clear any previous overlay messages
         const clearOverlays = () => {
             const container = document.getElementById('kline-chart-container');
@@ -1334,17 +1342,21 @@ class KLineChart {
             this.volumeChart.data.datasets[0].borderColor = volBorder;
             this.volumeChart.update();
 
-            // ----- Sync Strategy Comparison Back-test -----
+            // ----- Sync Strategy Comparison Back-test (non-blocking) -----
             try {
                 const btSymbolInput = document.getElementById('bt-symbol');
                 if (btSymbolInput) {
                     btSymbolInput.value = this.currentSymbol;
                 }
                 if (typeof window.runAllStrategiesBacktest === 'function') {
-                    // call asynchronously so UI stays responsive
+                    // call asynchronously so UI stays responsive and doesn't block chart loading
                     setTimeout(() => {
-                        window.runAllStrategiesBacktest();
-                    }, 0);
+                        try {
+                            window.runAllStrategiesBacktest();
+                        } catch (btErr) {
+                            console.warn('Backtest sync failed:', btErr);
+                        }
+                    }, 100);
                 }
             } catch (syncErr) {
                 console.warn('Failed to trigger back-test sync:', syncErr);
@@ -1402,7 +1414,11 @@ class KLineChart {
             console.error('Error loading chart data:', error);
             this.showErrorMessage('Failed to load chart data');
         } finally {
-            loadingDiv.style.display = 'none';
+            // Clear the timeout and hide loading spinner
+            clearTimeout(loadingTimeout);
+            if (loadingDiv) {
+                loadingDiv.style.display = 'none';
+            }
         }
     }
 

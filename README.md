@@ -65,8 +65,19 @@ The system follows a microservices architecture with the following components:
 
 ### Communication
 - **Message Bus**: Redis Streams for real-time data flow
-- **Data Storage**: TimescaleDB for OHLCV market data
+- **Data Storage**: TimescaleDB for OHLCV market data (separate tables per data source)
 - **Real-time Updates**: WebSocket connections for live dashboard
+
+### Data Source Separation
+The system uses **separate tables** for different data sources to ensure data integrity:
+
+| Data Source | Table | Purpose |
+|-------------|-------|---------|
+| `synthetic` | `price_ticks_synthetic` | Development/testing |
+| `alpaca` | `price_ticks_alpaca` | Real Alpaca data |
+| `polygon` | `price_ticks_polygon` | Real Polygon data |
+
+**Benefits**: No data contamination, clean backtests, easy cleanup, better compliance.
 
 ---
 
@@ -144,6 +155,24 @@ python manage_symbols.py benchmark
 
 # Generate sample configuration files
 python manage_symbols.py samples
+```
+
+### Data Source Management
+```bash
+# List all data source tables and their stats
+python manage_data_sources.py list
+
+# Create all data source tables
+python manage_data_sources.py create
+
+# Clean a specific table
+python manage_data_sources.py clean --source synthetic
+
+# Migrate data between sources
+python manage_data_sources.py migrate --source synthetic --target test --symbol AAPL
+
+# Compare data between sources
+python manage_data_sources.py compare --source alpaca --target synthetic
 ```
 
 ### Historical Data Backfill

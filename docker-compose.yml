@@ -38,6 +38,7 @@ services:
       - SERVICE_NAME=market_data
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=synthetic
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
     depends_on:
@@ -54,12 +55,30 @@ services:
       - SERVICE_NAME=alpaca_market_data
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=alpaca
     volumes:
       - ./symbols_cache.json:/app/symbols_cache.json:ro
     depends_on:
       redis:
         condition: service_healthy
     profiles: [ "alpaca" ]  # Only run when explicitly requested
+
+  # Polygon market data service
+  polygon_market_data:
+    build: .
+    command: python -m tradebot.market_data.polygon_service
+    env_file: [ .env ]
+    environment:
+      - SERVICE_NAME=polygon_market_data
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=polygon
+    volumes:
+      - ./symbols_cache.json:/app/symbols_cache.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles: [ "polygon" ]  # Only run when explicitly requested
 
   strategy:
     build: .
@@ -69,6 +88,7 @@ services:
       - SERVICE_NAME=strategy
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
     depends_on:
       redis:
         condition: service_healthy
@@ -81,6 +101,7 @@ services:
       - SERVICE_NAME=execution
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
     depends_on:
       redis:
         condition: service_healthy
@@ -93,6 +114,7 @@ services:
       - SERVICE_NAME=storage
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
     depends_on:
       redis:
         condition: service_healthy
@@ -108,6 +130,7 @@ services:
       - SERVICE_NAME=api
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
     ports: ["8000:8000"]
     depends_on:
       timescaledb:
@@ -124,6 +147,7 @@ services:
       - SERVICE_NAME=dashboard
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
     ports: ["8001:8001"]
     depends_on:
       redis:

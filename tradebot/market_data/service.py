@@ -3,8 +3,9 @@ import logging
 import os
 import random
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Dict
 
+import asyncpg
 from tradebot.common.bus import MessageBus
 from tradebot.common.models import PriceTick
 from tradebot.common.symbol_manager import SymbolManager
@@ -16,21 +17,13 @@ logger = logging.getLogger("market_data")
 SYMBOL_MODE = os.getenv("SYMBOL_MODE", "custom")
 LEGACY_SYMBOLS: List[str] = os.getenv("SYMBOLS", "AAPL,MSFT,AMZN,GOOG,TSLA").split(",")
 MAX_SYMBOLS = int(os.getenv("MAX_SYMBOLS", "500"))
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/tradebot")
 
 # Will be populated by symbol manager
 SYMBOLS: List[str] = []
 
-# Realistic starting prices based on approximate current market values (as of June 2024)
-REALISTIC_PRICES = {
-    "AAPL": 220.0,   # Apple around $220
-    "MSFT": 430.0,   # Microsoft around $430
-    "AMZN": 185.0,   # Amazon around $185
-    "GOOG": 175.0,   # Google around $175
-    "TSLA": 185.0,   # Tesla around $185
-}
-
-# Will be initialized after symbols are loaded
-INITIAL_PRICES = {}
+# Will be initialized with previous close prices from database
+INITIAL_PRICES: Dict[str, float] = {}
 
 
 async def generate_ticks(bus: MessageBus, interval: float = 1.0):
@@ -73,6 +66,53 @@ async def generate_ticks(bus: MessageBus, interval: float = 1.0):
         await asyncio.sleep(interval)
 
 
+async def get_previous_close_prices(symbols: List[str]) -> Dict[str, float]:
+    """Get the most recent close price for each symbol from the database."""
+    prices = {}
+    
+    try:
+        # Connect to database
+        conn = await asyncpg.connect(DATABASE_URL)
+        
+        try:
+            for symbol in symbols:
+                # Get the most recent close price for this symbol
+                result = await conn.fetchrow(
+                    """
+                    SELECT close_price, price 
+                    FROM price_ticks 
+                    WHERE symbol = $1 
+                    ORDER BY timestamp DESC 
+                    LIMIT 1
+                    """,
+                    symbol
+                )
+                
+                if result:
+                    # Use close_price if available, otherwise fall back to price
+                    close_price = result['close_price'] if result['close_price'] else result['price']
+                    prices[symbol] = float(close_price)
+                    logger.info(f"Found previous close price for {symbol}: ${close_price:.4f}")
+                else:
+                    # No historical data found, use a reasonable default
+                    default_price = random.uniform(10, 100)
+                    prices[symbol] = default_price
+                    logger.warning(f"No historical data for {symbol}, using default: ${default_price:.2f}")
+                    
+        finally:
+            await conn.close()
+            
+    except Exception as e:
+        logger.error(f"Error fetching previous close prices: {e}")
+        # Fall back to random prices if database connection fails
+        for symbol in symbols:
+            default_price = random.uniform(10, 100)
+            prices[symbol] = default_price
+            logger.warning(f"Database error, using default price for {symbol}: ${default_price:.2f}")
+    
+    return prices
+
+
 async def initialize_symbols():
     """Initialize symbols based on configuration."""
     global SYMBOLS, INITIAL_PRICES
@@ -91,9 +131,9 @@ async def initialize_symbols():
                    len(all_symbols), SYMBOL_MODE, len(SYMBOLS))
         logger.info("First 10 symbols: %s", SYMBOLS[:10])
     
-    # Initialize prices for all symbols
-    INITIAL_PRICES = {sym: REALISTIC_PRICES.get(sym, random.uniform(50, 500)) for sym in SYMBOLS}
-    logger.info("Initialized prices for %d symbols", len(INITIAL_PRICES))
+    # Initialize prices using previous close prices from database
+    INITIAL_PRICES = await get_previous_close_prices(SYMBOLS)
+    logger.info("Initialized prices for %d symbols using previous close prices", len(INITIAL_PRICES))
 
 
 async def main():

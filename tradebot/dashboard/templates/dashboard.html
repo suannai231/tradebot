@@ -709,36 +709,94 @@
         // ML Performance functions
         let mlPerformanceChart = null;
 
-        // Refresh ML performance data
+        // Refresh ML performance data - SIMPLIFIED VERSION
         window.refreshMLPerformance = async function() {
+            console.log('🔄 Refresh ML Performance clicked!');
+            
+            const refreshBtn = document.querySelector('button[onclick="refreshMLPerformance()"]');
+            const originalIcon = '<i class="fas fa-sync-alt"></i> Refresh';
+            
+            // Force restore button after 3 seconds no matter what
+            const forceRestore = setTimeout(() => {
+                console.log('⚠️ FORCE restoring button after 3 seconds');
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = originalIcon;
+                    refreshBtn.disabled = false;
+                }
+            }, 3000);
+            
             try {
+                // Change button immediately
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+                    refreshBtn.disabled = true;
+                }
+                
+                console.log('📡 Fetching data...');
                 const response = await fetch('/api/ml-performance');
+                console.log('📊 Got response:', response.status);
+                
                 if (response.ok) {
                     const data = await response.json();
-                    displayMLPerformance(data);
+                    console.log('📈 Got data, updating display...');
+                    
+                    // Simple display update without complex timing
+                    try {
+                        displayMLPerformance(data);
+                        console.log('✅ Display updated successfully');
+                    } catch (e) {
+                        console.error('❌ Display error:', e);
+                    }
                 } else {
-                    console.error('Failed to fetch ML performance data');
+                    console.error('❌ API error:', response.status);
                 }
+                
             } catch (error) {
-                console.error('Error refreshing ML performance:', error);
+                console.error('❌ Fetch error:', error);
+            } finally {
+                // Clear the force restore timeout
+                clearTimeout(forceRestore);
+                
+                // Restore button immediately in finally block
+                console.log('🔄 Restoring button now');
+                if (refreshBtn) {
+                    refreshBtn.innerHTML = originalIcon;
+                    refreshBtn.disabled = false;
+                }
             }
         };
 
         // Display ML performance data
         function displayMLPerformance(data) {
+            const displayFunctionStart = performance.now();
+            console.log('🎨 Displaying ML performance data...');
+            
+            // Fallback for STRATEGY_NAMES if not available
+            const strategyNames = window.STRATEGY_NAMES || {
+                'ensemble_ml': '🤖 Ensemble ML',
+                'lstm_ml': '🧠 LSTM Deep Learning',
+                'sentiment_ml': '📰 Sentiment Analysis',
+                'rl_ml': '🎯 Reinforcement Learning'
+            };
+            
             // Update performance summary
             const summaryDiv = document.getElementById('ml-performance-summary');
+            let summaryEndTime = performance.now(); // Initialize to avoid ReferenceError
+            
             if (data.performance) {
+                console.log('📊 Updating performance summary...');
                 let summaryHTML = '<div class="table-responsive"><table class="table table-sm">';
                 summaryHTML += '<thead><tr><th>Strategy</th><th>Signals</th><th>Win Rate</th><th>Avg PnL</th></tr></thead><tbody>';
                 
                 Object.entries(data.performance).forEach(([strategy, perf]) => {
-                    const winRate = perf.signals > 0 ? (perf.wins / perf.signals * 100).toFixed(1) : '0.0';
+                    // Calculate win rate based on completed trades only
+                    const completedTrades = perf.completed_trades || (perf.wins + perf.losses) || perf.signals;
+                    const winRate = completedTrades > 0 ? (perf.wins / completedTrades * 100).toFixed(1) : '0.0';
                     const avgPnl = perf.signals > 0 ? (perf.total_pnl / perf.signals).toFixed(2) : '0.00';
                     
                     summaryHTML += `
                         <tr>
-                            <td><strong>${STRATEGY_NAMES[strategy] || strategy}</strong></td>
+                            <td><strong>${strategyNames[strategy] || strategy}</strong></td>
                             <td>${perf.signals}</td>
                             <td>${winRate}%</td>
                             <td class="${perf.total_pnl > 0 ? 'text-success' : 'text-danger'}">$${avgPnl}</td>
@@ -748,11 +806,18 @@
                 
                 summaryHTML += '</tbody></table></div>';
                 summaryDiv.innerHTML = summaryHTML;
+                summaryEndTime = performance.now();
+                console.log(`⏱️ Summary table took: ${(summaryEndTime - displayFunctionStart).toFixed(2)}ms`);
+                console.log('✅ Performance summary updated');
+            } else {
+                summaryDiv.innerHTML = '<div class="alert alert-warning">No performance data available</div>';
+                console.log('❌ No performance data available');
             }
 
             // Update training status
             const statusDiv = document.getElementById('ml-training-status');
             if (data.training_status) {
+                console.log('🎓 Updating training status...');
                 let statusHTML = '<div class="table-responsive"><table class="table table-sm">';
                 statusHTML += '<thead><tr><th>Strategy</th><th>Status</th><th>Last Training</th></tr></thead><tbody>';
                 
@@ -762,7 +827,7 @@
                     
                     statusHTML += `
                         <tr>
-                            <td><strong>${STRATEGY_NAMES[strategy] || strategy}</strong></td>
+                            <td><strong>${strategyNames[strategy] || strategy}</strong></td>
                             <td><i class="${statusIcon} ${statusClass}"></i> ${status.status}</td>
                             <td>${status.last_training || 'Never'}</td>
                         </tr>
@@ -771,35 +836,75 @@
                 
                 statusHTML += '</tbody></table></div>';
                 statusDiv.innerHTML = statusHTML;
+                const statusEndTime = performance.now();
+                console.log(`⏱️ Training status took: ${(statusEndTime - summaryEndTime).toFixed(2)}ms`);
+                console.log('✅ Training status updated');
+            } else {
+                console.log('❌ No training status data available');
             }
 
             // Update performance chart
+            const chartStartTime = performance.now();
             updateMLPerformanceChart(data);
+            const chartEndTime = performance.now();
+            console.log(`⏱️ Chart update took: ${(chartEndTime - chartStartTime).toFixed(2)}ms`);
+            console.log(`⏱️ Total display function took: ${(chartEndTime - displayFunctionStart).toFixed(2)}ms`);
         }
 
         // Update ML performance chart
         function updateMLPerformanceChart(data) {
-            const ctx = document.getElementById('ml-performance-chart');
+            console.log('📊 Updating ML performance chart...');
             
-            if (mlPerformanceChart) {
-                mlPerformanceChart.destroy();
-            }
+            try {
+                const ctx = document.getElementById('ml-performance-chart');
+                if (!ctx) {
+                    console.error('❌ Chart canvas element not found');
+                    return;
+                }
+                
+                // Check if Chart.js is available
+                if (typeof Chart === 'undefined') {
+                    console.error('❌ Chart.js library not available');
+                    return;
+                }
+                
+                if (mlPerformanceChart) {
+                    try {
+                        mlPerformanceChart.destroy();
+                        console.log('🗑️ Previous chart destroyed');
+                    } catch (destroyError) {
+                        console.warn('⚠️ Error destroying previous chart:', destroyError);
+                    }
+                    mlPerformanceChart = null;
+                }
 
-            if (data.performance) {
-                const strategies = Object.keys(data.performance);
-                const winRates = strategies.map(s => {
-                    const perf = data.performance[s];
-                    return perf.signals > 0 ? (perf.wins / perf.signals * 100) : 0;
-                });
-                const avgPnLs = strategies.map(s => {
-                    const perf = data.performance[s];
-                    return perf.signals > 0 ? (perf.total_pnl / perf.signals) : 0;
-                });
+                if (data.performance && Object.keys(data.performance).length > 0) {
+                    console.log('📈 Creating new chart with data:', data.performance);
+                    const strategies = Object.keys(data.performance);
+                    const winRates = strategies.map(s => {
+                        const perf = data.performance[s];
+                        const completedTrades = perf.completed_trades || (perf.wins + perf.losses) || perf.signals;
+                        return completedTrades > 0 ? (perf.wins / completedTrades * 100) : 0;
+                    });
+                    const avgPnLs = strategies.map(s => {
+                        const perf = data.performance[s];
+                        return perf.signals > 0 ? (perf.total_pnl / perf.signals) : 0;
+                    });
 
-                mlPerformanceChart = new Chart(ctx, {
+                    console.log('📊 Chart data - Strategies:', strategies, 'Win Rates:', winRates, 'Avg PnLs:', avgPnLs);
+
+                    // Use the same strategyNames fallback as in the display function
+                    const strategyNamesForChart = window.STRATEGY_NAMES || {
+                        'ensemble_ml': '🤖 Ensemble ML',
+                        'lstm_ml': '🧠 LSTM Deep Learning', 
+                        'sentiment_ml': '📰 Sentiment Analysis',
+                        'rl_ml': '🎯 Reinforcement Learning'
+                    };
+
+                    mlPerformanceChart = new Chart(ctx, {
                     type: 'bar',
                     data: {
-                        labels: strategies.map(s => STRATEGY_NAMES[s] || s),
+                        labels: strategies.map(s => strategyNamesForChart[s] || s),
                         datasets: [{
                             label: 'Win Rate (%)',
                             data: winRates,
@@ -847,6 +952,17 @@
                         }
                     }
                 });
+                    console.log('✅ ML performance chart created successfully');
+                } else {
+                    console.log('❌ No chart data available');
+                }
+            } catch (chartError) {
+                console.error('❌ Error creating ML performance chart:', chartError);
+                // Show fallback message
+                const chartContainer = ctx.parentElement;
+                if (chartContainer) {
+                    chartContainer.innerHTML = '<div class="alert alert-warning">Error creating chart. Chart.js may not be loaded.</div>';
+                }
             }
         }
 

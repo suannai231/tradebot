@@ -291,7 +291,10 @@ class RLStrategy:
                 self.env = TradingEnvironment(config)
                 self.vec_env = DummyVecEnv([lambda: self.env])
                 
-                # Initialize PPO agent
+                # Initialize PPO agent with GPU support
+                device = "mps" if torch.backends.mps.is_available() else "cpu"
+                print(f"RL Strategy using device: {device}")
+                
                 self.model = PPO(
                     "MlpPolicy",
                     self.vec_env,
@@ -300,6 +303,7 @@ class RLStrategy:
                     n_steps=config.n_steps,
                     n_epochs=config.n_epochs,
                     gamma=config.gamma,
+                    device=device,
                     verbose=0
                 )
             except Exception as e:
@@ -346,8 +350,10 @@ class RLStrategy:
         
         # Train model
         try:
-            # Create temporary environment for training
+            # Create temporary environment for training with GPU support
             temp_env = DummyVecEnv([lambda: env])
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            
             temp_model = PPO(
                 "MlpPolicy",
                 temp_env,
@@ -356,6 +362,7 @@ class RLStrategy:
                 n_steps=self.config.n_steps,
                 n_epochs=self.config.n_epochs,
                 gamma=self.config.gamma,
+                device=device,
                 verbose=0
             )
             
@@ -398,28 +405,31 @@ class RLStrategy:
             return 0.5, 0.0
     
     async def _log_signal(self, signal: Signal, strategy_name: str):
-        """Log signal to performance tracker"""
+        """Process signal through position manager"""
         try:
             # Import here to avoid circular imports
-            from tradebot.strategy.ml_service import get_performance_tracker
+            from tradebot.strategy.position_manager import process_ml_signal
             
-            tracker = await get_performance_tracker()
-            if tracker:
-                await tracker.log_signal(strategy_name, signal.symbol, signal)
+            action = await process_ml_signal(strategy_name, signal.symbol, signal)
+            logger.debug(f"Position manager action for {signal.symbol}: {action}")
         except Exception as e:
-            logger.error(f"Error logging signal to performance tracker: {e}")
+            logger.error(f"Error processing signal through position manager: {e}")
     
     def on_tick(self, tick: PriceTick) -> Optional[Signal]:
-        """Process tick and generate signals - SIMPLIFIED STABLE VERSION"""
+        """Process tick and generate signals - IMPROVED RL STRATEGY WITH RISK MANAGEMENT"""
         symbol = tick.symbol
         
         try:
             # Simple data storage without complex RL operations
             self.prices[symbol].append(tick.price)
-            self.volumes[symbol].append(tick.volume if hasattr(tick, 'volume') else 1000)
+            # Handle volume more carefully - default to 1000 if None or missing
+            volume = 1000  # Default volume
+            if hasattr(tick, 'volume') and tick.volume is not None:
+                volume = tick.volume
+            self.volumes[symbol].append(volume)
             
             # Basic requirements check
-            if len(self.prices[symbol]) < 10:
+            if len(self.prices[symbol]) < 20:  # Need more data for better analysis
                 return None
             
             # Skip if price is too small (prevents numerical issues)
@@ -428,53 +438,150 @@ class RLStrategy:
             
             # Simple time throttling
             time_since_last = datetime.now(timezone.utc) - self.last_signals[symbol]
-            if time_since_last.total_seconds() < 120:  # 2 minutes (more frequent)
+            if time_since_last.total_seconds() < 180:  # 3 minutes between signals
                 return None
             
-            # Simplified "RL-inspired" strategy using multiple factors
+            # Get price and volume data
             prices = list(self.prices[symbol])
             volumes = list(self.volumes[symbol])
+            current_price = prices[-1]
             
-            if len(prices) < 10:
+            if len(prices) < 20:
                 return None
             
-            # Factor 1: Price momentum (short vs medium term)
-            short_ma = sum(prices[-3:]) / 3
-            medium_ma = sum(prices[-7:]) / 7
-            momentum_score = 0.7 if short_ma > medium_ma else 0.3
+            # === ADVANCED TECHNICAL ANALYSIS ===
             
-            # Factor 2: Volume confirmation
-            recent_vol = sum(volumes[-3:]) / 3
-            avg_vol = sum(volumes[-10:]) / 10
-            volume_score = 0.6 if recent_vol > avg_vol * 1.2 else 0.4
+            # 1. Trend Analysis (EMA-based)
+            def calculate_ema(data, period):
+                """Calculate Exponential Moving Average"""
+                multiplier = 2 / (period + 1)
+                ema = [data[0]]  # Start with first price
+                for price in data[1:]:
+                    ema.append((price * multiplier) + (ema[-1] * (1 - multiplier)))
+                return ema[-1]
             
-            # Factor 3: Price volatility (opportunity factor)
-            price_changes = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(-5, 0)]
-            volatility = sum([abs(change) for change in price_changes]) / len(price_changes)
-            vol_score = 0.6 if volatility > 0.02 else 0.5  # Higher vol = more opportunity
+            try:
+                ema_5 = calculate_ema(prices[-10:], 5)
+                ema_10 = calculate_ema(prices[-15:], 10)
+                ema_20 = calculate_ema(prices[-20:], 20)
+                
+                # Trend strength (0 = strong down, 1 = strong up)
+                trend_score = 0.5  # Default neutral
+                if ema_5 > ema_10 > ema_20:
+                    trend_score = 0.8  # Strong uptrend
+                elif ema_5 > ema_10:
+                    trend_score = 0.65  # Weak uptrend
+                elif ema_5 < ema_10 < ema_20:
+                    trend_score = 0.2  # Strong downtrend
+                elif ema_5 < ema_10:
+                    trend_score = 0.35  # Weak downtrend
+                
+            except (IndexError, ZeroDivisionError):
+                trend_score = 0.5
             
-            # Factor 4: Mean reversion component
-            current_price = prices[-1]
-            long_ma = sum(prices[-10:]) / 10
-            distance_from_mean = (current_price - long_ma) / long_ma
-            reversion_score = 0.7 if distance_from_mean < -0.02 else (0.3 if distance_from_mean > 0.02 else 0.5)
+            # 2. RSI (Relative Strength Index)
+            try:
+                price_changes = [prices[i] - prices[i-1] for i in range(-14, 0)]
+                gains = [max(0, change) for change in price_changes]
+                losses = [abs(min(0, change)) for change in price_changes]
+                
+                avg_gain = sum(gains) / len(gains) if gains else 0
+                avg_loss = sum(losses) / len(losses) if losses else 0
+                
+                if avg_loss == 0:
+                    rsi = 100
+                else:
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                
+                # RSI score (0 = oversold/buy, 1 = overbought/sell)
+                if rsi < 30:
+                    rsi_score = 0.8  # Oversold - buy signal
+                elif rsi > 70:
+                    rsi_score = 0.2  # Overbought - sell signal
+                else:
+                    rsi_score = 0.5  # Neutral
+                    
+            except (IndexError, ZeroDivisionError):
+                rsi_score = 0.5
             
-            # Combine factors (weighted average)
-            combined_score = (momentum_score * 0.3 + volume_score * 0.2 + 
-                            vol_score * 0.2 + reversion_score * 0.3)
+            # 3. Volume Analysis
+            try:
+                recent_vol = sum(volumes[-3:]) / 3
+                avg_vol = sum(volumes[-10:]) / 10
+                volume_ratio = recent_vol / avg_vol if avg_vol > 0 else 1
+                
+                # Volume confirmation score
+                if volume_ratio > 1.5:
+                    volume_score = 0.7  # High volume confirms move
+                elif volume_ratio < 0.5:
+                    volume_score = 0.3  # Low volume - weak signal
+                else:
+                    volume_score = 0.5  # Normal volume
+                    
+            except (TypeError, ZeroDivisionError):
+                volume_score = 0.5
+            
+            # 4. Volatility Analysis (for risk management)
+            try:
+                price_changes = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(-10, 0) if prices[i-1] > 0]
+                if price_changes:
+                    volatility = sum([abs(change) for change in price_changes]) / len(price_changes)
+                    
+                    # For high volatility stocks like TNXP, be more conservative
+                    if volatility > 0.1:  # 10% daily volatility
+                        volatility_penalty = 0.3  # Be very conservative
+                    elif volatility > 0.05:  # 5% daily volatility
+                        volatility_penalty = 0.4  # Be conservative
+                    else:
+                        volatility_penalty = 0.5  # Normal
+                else:
+                    volatility_penalty = 0.5
+                    
+            except (IndexError, ZeroDivisionError):
+                volatility_penalty = 0.5
+            
+            # 5. Price Position Analysis
+            try:
+                high_20 = max(prices[-20:])
+                low_20 = min(prices[-20:])
+                price_position = (current_price - low_20) / (high_20 - low_20) if high_20 > low_20 else 0.5
+                
+                # Avoid buying at peaks, prefer buying at dips
+                if price_position > 0.8:
+                    position_score = 0.2  # Near high - avoid buying
+                elif price_position < 0.3:
+                    position_score = 0.8  # Near low - good buying opportunity
+                else:
+                    position_score = 0.5  # Middle range
+                    
+            except (IndexError, ZeroDivisionError):
+                position_score = 0.5
+            
+            # === COMBINE ALL FACTORS ===
+            # Weighted combination with emphasis on risk management
+            combined_score = (
+                trend_score * 0.25 +        # Trend direction
+                rsi_score * 0.25 +          # Momentum
+                volume_score * 0.15 +       # Volume confirmation
+                volatility_penalty * 0.15 + # Risk management
+                position_score * 0.20       # Entry timing
+            )
             
             # Calculate confidence based on factor alignment
-            factor_scores = [momentum_score, volume_score, vol_score, reversion_score]
+            factor_scores = [trend_score, rsi_score, volume_score, volatility_penalty, position_score]
             factor_variance = sum([(score - combined_score) ** 2 for score in factor_scores]) / len(factor_scores)
-            confidence = max(0.3, 1.0 - factor_variance * 5)  # Higher agreement = higher confidence
+            confidence = max(0.3, 1.0 - factor_variance * 3)  # Higher agreement = higher confidence
             
-            # Generate signals with more aggressive thresholds
-            if combined_score > 0.55 and confidence > 0.3:  # Lowered thresholds
+            # === SIGNAL GENERATION WITH BALANCED THRESHOLDS ===
+            
+            # Balanced thresholds - conservative but not too restrictive
+            if combined_score > 0.58 and confidence > 0.4:  # Good buy signal
                 if self.last_side[symbol] != Side.buy:
                     self.last_side[symbol] = Side.buy
                     self.last_signals[symbol] = tick.timestamp
                     
-                    logger.info(f"Simplified RL buy signal for {symbol}: score={combined_score:.3f}, conf={confidence:.3f}")
+                    logger.info(f"Improved RL buy signal for {symbol}: score={combined_score:.3f}, conf={confidence:.3f}, trend={trend_score:.3f}, rsi={rsi_score:.3f}, pos={position_score:.3f}")
                     return Signal(
                         symbol=symbol,
                         side=Side.buy,
@@ -483,12 +590,12 @@ class RLStrategy:
                         confidence=confidence
                     )
             
-            elif combined_score < 0.45 and confidence > 0.3:  # Lowered thresholds
+            elif combined_score < 0.42 and confidence > 0.35:  # Good sell signal
                 if self.last_side[symbol] == Side.buy:
                     self.last_side[symbol] = Side.sell
                     self.last_signals[symbol] = tick.timestamp
                     
-                    logger.info(f"Simplified RL sell signal for {symbol}: score={combined_score:.3f}, conf={confidence:.3f}")
+                    logger.info(f"Improved RL sell signal for {symbol}: score={combined_score:.3f}, conf={confidence:.3f}, trend={trend_score:.3f}, rsi={rsi_score:.3f}, pos={position_score:.3f}")
                     return Signal(
                         symbol=symbol,
                         side=Side.sell,
@@ -500,7 +607,7 @@ class RLStrategy:
             return None
             
         except Exception as e:
-            logger.error(f"Error in simplified RL strategy for {symbol}: {e}")
+            logger.error(f"Error in improved RL strategy for {symbol}: {e}")
             return None
 
 
