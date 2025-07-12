@@ -80,6 +80,24 @@ services:
         condition: service_healthy
     profiles: [ "polygon" ]  # Only run when explicitly requested
 
+  # Yahoo Finance market data service
+  yahoo_market_data:
+    build: .
+    command: python -m tradebot.market_data.yahoo_service
+    env_file: [ .env ]
+    environment:
+      - SERVICE_NAME=yahoo_market_data
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=yahoo
+      - YAHOO_FETCH_INTERVAL=10.0
+    volumes:
+      - ./symbols_cache.json:/app/symbols_cache.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles: [ "yahoo" ]  # Only run when explicitly requested
+
   strategy:
     build: .
     command: python -m tradebot.strategy.service

@@ -29,7 +29,7 @@ INITIAL_PRICES: Dict[str, float] = {}
 
 def get_table_name() -> str:
     """Get the correct table name based on DATA_SOURCE environment variable"""
-    valid_sources = ['synthetic', 'alpaca', 'polygon']
+    valid_sources = ['synthetic', 'alpaca', 'polygon', 'yahoo']
     
     if DATA_SOURCE not in valid_sources:
         logger.warning(f"Unknown data source '{DATA_SOURCE}', defaulting to 'synthetic'")
@@ -39,7 +39,8 @@ def get_table_name() -> str:
     table_mapping = {
         'synthetic': 'price_ticks_synthetic',
         'alpaca': 'price_ticks_alpaca', 
-        'polygon': 'price_ticks_polygon'
+        'polygon': 'price_ticks_polygon',
+        'yahoo': 'price_ticks_yahoo'
     }
     
     return table_mapping.get(DATA_SOURCE, 'price_ticks_synthetic')

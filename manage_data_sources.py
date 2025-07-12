@@ -30,7 +30,8 @@ class DataSourceManager:
         self.data_sources = {
             'synthetic': 'price_ticks_synthetic',
             'alpaca': 'price_ticks_alpaca',
-            'polygon': 'price_ticks_polygon'
+            'polygon': 'price_ticks_polygon',
+            'yahoo': 'price_ticks_yahoo'
         }
     
     async def connect(self):

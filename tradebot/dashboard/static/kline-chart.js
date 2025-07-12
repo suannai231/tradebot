@@ -61,7 +61,6 @@ class KLineChart {
         this.isDragging = false;
         this.lastX = 0;
         this.crosshair = { x: null, y: null, active: false };
-        this.priceAdjustmentMethod = 'backward';
         // Use the same strategies list defined for back-test (global ALL_STRATEGIES)
         this.strategyList = Array.isArray(window.ALL_STRATEGIES) && window.ALL_STRATEGIES.length > 0
             ? window.ALL_STRATEGIES.slice() // clone
@@ -668,32 +667,58 @@ class KLineChart {
                 scales: {
                     x: {
                         type: 'time',
-                        bounds: 'data',
-                        offset: false,
+                        adapters: {
+                            date: {
+                                zone: 'UTC',
+                            },
+                        },
+                        display: true,
                         grid: {
-                            drawOnChartArea: false,
-                            drawTicks: false
+                            display: true,
+                            drawOnChartArea: true,
+                            drawTicks: true,
+                            color: '#666666',
                         },
                         time: {
                             unit: 'day',
-                            minUnit: 'day',
+                            stepSize: 1,
                             displayFormats: {
                                 day: 'MMM dd',
                                 week: 'MMM dd',
                                 month: 'MMM yyyy'
                             }
                         },
-                        display: false,
                         title: {
-                            display: false,
-                            text: 'Date'
+                            display: false
                         },
                         ticks: {
-                            source: 'data',
-                            maxTicksLimit: 10,
-                            callback: function(value) {
-                                const d = new Date(value);
-                                return isFinite(d) ? d.toLocaleDateString('en-US', { month: 'short' }) : '';
+                            display: true,
+                            color: '#666666',
+                            font: {
+                                size: 11
+                            },
+                            maxTicksLimit: 8,
+                            maxRotation: 0,
+                            minRotation: 0,
+                            autoSkip: true,
+                            autoSkipPadding: 15,
+                            callback: function(value, index, ticks) {
+                                const date = new Date(value);
+                                if (!isFinite(date)) return '';
+                                // Determine visible span in days
+                                const spanDays = (this.max - this.min) / 86400000; // ms per day
+                                let formatOptions;
+                                if (spanDays > 365) {
+                                    // Very zoomed out – show just the year
+                                    formatOptions = { year: 'numeric' };
+                                } else if (spanDays > 120) {
+                                    // Multi-month span – show month and year
+                                    formatOptions = { month: 'short', year: 'numeric' };
+                                } else {
+                                    // Zoomed in – show month and day
+                                    formatOptions = { month: 'short', day: 'numeric' };
+                                }
+                                return date.toLocaleDateString('en-US', formatOptions);
                             }
                         }
                     },
@@ -837,6 +862,9 @@ class KLineChart {
             plugins: [candlestickPlugin, autoAdjustYAxisPlugin, crosshairPlugin]
         });
         
+        // Add reference to KLineChart instance for accessing timeframe in ticks callback
+        this.chart.klineChart = this;
+        
         console.log('Combined chart created, zoom plugin enabled:', !!this.chart.options.plugins.zoom);
 
         // Handle chart resize
@@ -889,7 +917,6 @@ class KLineChart {
 
 
         // Add context menu for price adjustment
-        this.createPriceAdjustmentMenu(canvas);
 
         // After global tooltip override, add filter
         Chart.defaults.plugins.tooltip.filter = function(ctx) {
@@ -901,74 +928,6 @@ class KLineChart {
         
         // Setup mouse drag panning functionality
         this.setupMouseDragPan();
-    }
-
-    createPriceAdjustmentMenu(canvas) {
-        // Create main menu element
-        let menu = document.createElement('div');
-        menu.id = 'price-adjustment-menu';
-        menu.style.position = 'absolute';
-        menu.style.display = 'none';
-        menu.style.zIndex = 1000;
-        menu.style.background = '#23272e';
-        menu.style.border = '1px solid #444';
-        menu.style.borderRadius = '6px';
-        menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
-        menu.style.padding = '4px 0';
-        menu.style.minWidth = '180px';
-        menu.style.fontFamily = 'inherit';
-        menu.style.color = '#fff';
-        menu.innerHTML = `
-            <div class="menu-item has-submenu" style="padding: 8px 16px; cursor: pointer; position: relative;">
-                Price Adjustment <span style="float:right;">&#9654;</span>
-                <div class="submenu" style="display:none; position:absolute; left:100%; top:0; background:#23272e; border:1px solid #444; border-radius:6px; min-width:180px; box-shadow:0 2px 8px rgba(0,0,0,0.2);">
-                    <div class="menu-item" data-method="backward" style="padding: 8px 16px; cursor: pointer;">Backward Adjusted</div>
-                    <div class="menu-item" data-method="none" style="padding: 8px 16px; cursor: pointer;">Unadjusted</div>
-                    <div class="menu-item" data-method="forward" style="padding: 8px 16px; cursor: pointer;">Forward Adjusted</div>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(menu);
-
-        // Hide menu on click elsewhere
-        document.addEventListener('click', () => { menu.style.display = 'none'; });
-        // Prevent default context menu and show custom menu
-        canvas.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            menu.style.display = 'block';
-            menu.style.left = e.pageX + 'px';
-            menu.style.top = e.pageY + 'px';
-        });
-        // Submenu show/hide logic
-        const parentItem = menu.querySelector('.has-submenu');
-        const submenu = parentItem.querySelector('.submenu');
-        parentItem.addEventListener('mouseenter', () => {
-            submenu.style.display = 'block';
-        });
-        parentItem.addEventListener('mouseleave', () => {
-            submenu.style.display = 'none';
-        });
-        submenu.addEventListener('mouseenter', () => {
-            submenu.style.display = 'block';
-        });
-        submenu.addEventListener('mouseleave', () => {
-            submenu.style.display = 'none';
-        });
-        // Handle submenu item click
-        submenu.querySelectorAll('.menu-item').forEach(item => {
-            item.addEventListener('click', (e) => {
-                const method = item.getAttribute('data-method');
-                menu.style.display = 'none';
-                this.setPriceAdjustmentMethod(method);
-            });
-        });
-    }
-
-    setPriceAdjustmentMethod(method) {
-        // Store the selected method and reload chart data
-        console.log(`Price adjustment method changed to: ${method}`);
-        this.priceAdjustmentMethod = method;
-        this.loadChartData();
     }
 
     // Filter out non-trading dates (weekends and holidays)
@@ -1036,22 +995,10 @@ class KLineChart {
         };
         clearOverlays();
         try {
-            // Determine adjustment method - use selected method or default to 'none' (unadjusted)
-            const adjustmentMethod = this.priceAdjustmentMethod || 'backward';
-            
-            // Map adjustment methods to API parameters
-            const adjustmentParams = {
-                'none': 'adjust_for_splits=false',
-                'backward': 'adjust_for_splits=true&adjust_method=backward',
-                'forward': 'adjust_for_splits=true&adjust_method=forward'
-            };
-            
-            const adjustmentParam = adjustmentParams[adjustmentMethod] || 'adjust_for_splits=false';
-            
             const cacheBuster = Date.now() + Math.random();
             // Limit data points to prevent browser overload: 1000 for daily, 5000 for weekly/monthly
             const limit = this.currentTimeframe === '1D' ? 1000 : 5000;
-            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=${limit}&${adjustmentParam}&_t=${cacheBuster}`, {
+            const response = await fetch(`/api/historical-data/${this.currentSymbol}?timeframe=${this.currentTimeframe}&limit=${limit}&_t=${cacheBuster}`, {
                 cache: 'no-cache',
                 headers: {
                     'Cache-Control': 'no-cache',
@@ -1068,7 +1015,7 @@ class KLineChart {
                 this.showErrorMessage('Invalid API response format');
                 return;
             }
-            console.log(`K-line API data (${adjustmentMethod} adjustment):`, data); // DEBUG
+            console.log('K-line API data:', data); // DEBUG
             console.log('Response status:', response.status, 'OK:', response.ok);
             console.log('Data type:', typeof data, 'Is array:', Array.isArray(data));
             console.log('Data has detail:', !!data.detail);
@@ -1081,9 +1028,6 @@ class KLineChart {
                 return;
             }
             
-            // Debug: Check a few sample data points for split adjustment
-            const feb2025Data = data.filter(d => d.timestamp && d.timestamp.startsWith('2025-02-0')).slice(0, 5);
-            console.log(`February 2025 sample data (${adjustmentMethod} adjustment):`, feb2025Data);
             if (data.length === 0) {
                 this.showNoDataMessage();
                 return;
@@ -1176,9 +1120,7 @@ class KLineChart {
             console.log('Volume data for chart:', volumeData); // DEBUG
             // Set chart data
             this.chart.data.datasets[0].data = displayData;
-            const adjustmentLabel = adjustmentMethod === 'none' ? 'Unadjusted' : 
-                                  adjustmentMethod === 'backward' ? 'Backward Adj.' : 
-                                  adjustmentMethod === 'forward' ? 'Forward Adj.' : 'Unadjusted';
+            const adjustmentLabel = 'Unadjusted'; // No longer showing adjustment method
             this.chart.data.datasets[0].label = `${this.currentSymbol} (${this.currentTimeframe}) - ${adjustmentLabel}`;
             
             // Clear any error overlays since we have successful data
@@ -1201,7 +1143,7 @@ class KLineChart {
                     this.chart.options.scales.yVolume.max = newMax;
                     this.chart.options.scales.yVolume.min = 0;
                     
-                    console.log(`Volume Y-axis scaled to max: ${newMax.toLocaleString()}, volumes range: [${Math.min(...volumes)}, ${maxVolume}]`);
+                    console.log(`Volume Y-axis scaled to max: ${newMax.toLocaleString()}, volumes: [${Math.min(...volumes)}, ${maxVolume}]`);
                 } else {
                     // No volume data, set a default small scale to ensure bars are visible
                     this.chart.options.scales.yVolume.max = 1000;
