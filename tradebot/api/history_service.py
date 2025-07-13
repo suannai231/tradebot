@@ -18,6 +18,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localho
 SERVICE_NAME = os.getenv("SERVICE_NAME")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+def get_table_name() -> str:
+    """Get the price ticks table name based on DATA_SOURCE environment variable."""
+    data_source = os.getenv('DATA_SOURCE', 'synthetic')
+    return f'price_ticks_{data_source}'
+
 # Database connection pool
 pool: Optional[asyncpg.Pool] = None
 
@@ -110,9 +115,10 @@ async def get_history(
     if not start:
         start = datetime.fromtimestamp(end.timestamp() - 86400, timezone.utc)
     
-    query = """
+    table_name = get_table_name()
+    query = f"""
         SELECT symbol, price, timestamp, volume, open_price, high_price, low_price, close_price, trade_count, vwap
-        FROM price_ticks
+        FROM {table_name}
         WHERE symbol = $1 AND timestamp BETWEEN $2 AND $3
         ORDER BY timestamp DESC
         LIMIT $4
@@ -153,16 +159,17 @@ async def get_stats(
     if not start:
         start = datetime.fromtimestamp(end.timestamp() - 86400, timezone.utc)
     
-    query = """
+    table_name = get_table_name()
+    query = f"""
         SELECT 
             COUNT(*) as tick_count,
             MIN(price) as min_price,
             MAX(price) as max_price,
             AVG(price) as avg_price,
-            (SELECT price FROM price_ticks 
+            (SELECT price FROM {table_name} 
              WHERE symbol = $1 AND timestamp <= $3 
              ORDER BY timestamp DESC LIMIT 1) as latest_price
-        FROM price_ticks
+        FROM {table_name}
         WHERE symbol = $1 AND timestamp BETWEEN $2 AND $3
     """
     
@@ -190,14 +197,15 @@ async def get_symbols():
     if not pool:
         raise HTTPException(500, "Database not available")
     
-    query = """
+    table_name = get_table_name()
+    query = f"""
         SELECT DISTINCT symbol, 
                COUNT(*) as total_ticks,
                COUNT(CASE WHEN open_price IS NOT NULL THEN 1 END) as ohlcv_ticks,
                COUNT(CASE WHEN volume > 0 THEN 1 END) as volume_ticks,
                MAX(timestamp) as latest_timestamp,
-               (SELECT price FROM price_ticks p2 WHERE p2.symbol = price_ticks.symbol ORDER BY timestamp DESC LIMIT 1) as latest_price
-        FROM price_ticks 
+               (SELECT price FROM {table_name} p2 WHERE p2.symbol = {table_name}.symbol ORDER BY timestamp DESC LIMIT 1) as latest_price
+        FROM {table_name} 
         GROUP BY symbol 
         ORDER BY latest_timestamp DESC
     """
@@ -233,7 +241,8 @@ async def get_ohlcv_summary(
     if not start:
         start = datetime.fromtimestamp(end.timestamp() - 86400, timezone.utc)
     
-    query = """
+    table_name = get_table_name()
+    query = f"""
         SELECT 
             symbol,
             COUNT(*) as bar_count,
@@ -245,7 +254,7 @@ async def get_ohlcv_summary(
             AVG(volume) as avg_volume,
             MAX(high_price) as period_high,
             MIN(low_price) as period_low
-        FROM price_ticks
+        FROM {table_name}
         WHERE symbol = $1 AND timestamp BETWEEN $2 AND $3 AND open_price IS NOT NULL
         GROUP BY symbol
     """

@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+import os
 from collections import deque, defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -10,6 +11,11 @@ import aiohttp
 from tradebot.common.models import PriceTick, Signal, Side
 
 logger = logging.getLogger("advanced_strategies")
+
+def get_table_name() -> str:
+    """Get the price ticks table name based on DATA_SOURCE environment variable."""
+    data_source = os.getenv('DATA_SOURCE', 'synthetic')
+    return f'price_ticks_{data_source}'
 
 # NOTE: This file contains consolidated strategies from the former high_return_strategies.py
 # All high-return strategies have been integrated into this single advanced strategies module
@@ -78,9 +84,10 @@ class SplitAwareDataProvider:
     async def get_raw_volume_data(self, symbol: str, days_back: int = 30) -> List[Dict]:
         """Get raw volume data for accurate volume analysis."""
         async with self.db_pool.acquire() as conn:
-            query = """
+            table_name = get_table_name()
+            query = f"""
                 SELECT timestamp, volume, close_price
-                FROM price_ticks 
+                FROM {table_name} 
                 WHERE symbol = $1 
                     AND timestamp >= NOW() - INTERVAL '%s days'
                     AND volume IS NOT NULL
@@ -100,9 +107,10 @@ class SplitAwareDataProvider:
         """Get split-adjusted prices for trend analysis."""
         # Get raw price data
         async with self.db_pool.acquire() as conn:
-            query = """
+            table_name = get_table_name()
+            query = f"""
                 SELECT timestamp, open_price, high_price, low_price, close_price
-                FROM price_ticks 
+                FROM {table_name} 
                 WHERE symbol = $1 
                     AND timestamp >= NOW() - INTERVAL '%s days'
                     AND close_price IS NOT NULL

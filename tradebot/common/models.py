@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, Field
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
 
@@ -50,14 +50,14 @@ class MLStrategySignal:
     symbol: str = ""
     signal_type: str = ""  # 'buy' or 'sell'
     entry_price: float = 0.0
-    entry_timestamp: datetime = None
+    entry_timestamp: Optional[datetime] = None
     exit_price: Optional[float] = None
     exit_timestamp: Optional[datetime] = None
     confidence: float = 0.0
     pnl: Optional[float] = None
     is_winner: Optional[bool] = None
     metadata: Optional[Dict[str, Any]] = None
-    created_at: datetime = None
+    created_at: Optional[datetime] = None
 
 
 @dataclass
@@ -78,3 +78,49 @@ class MLPerformanceMetrics:
     model_accuracy: float
     training_status: str
     last_training_time: Optional[datetime] 
+
+
+@dataclass
+class TrainingJob:
+    """ML Training Job Model"""
+    job_id: str
+    strategy_type: str  # 'ensemble', 'lstm', 'rl'
+    symbol: str
+    priority: int = 1
+    created_at: Optional[datetime] = field(default=None)
+    metadata: Optional[Dict[str, Any]] = field(default=None)
+    
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+        if self.metadata is None:
+            self.metadata = {}
+
+@dataclass
+class TrainingResult:
+    """ML Training Result Model"""
+    accuracy: float
+    loss: float
+    training_time: float
+    data_points: int
+    metadata: Optional[Dict[str, Any]] = field(default=None)
+    
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
+
+@dataclass
+class TrainingMetrics:
+    """ML Training Metrics Model"""
+    name: str
+    value: float
+    symbol: Optional[str] = None
+    strategy_type: Optional[str] = None
+    timestamp: Optional[datetime] = field(default=None)
+    metadata: Optional[Dict[str, Any]] = field(default=None)
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+        if self.metadata is None:
+            self.metadata = {} 

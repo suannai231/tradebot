@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import asyncpg
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
@@ -110,6 +111,11 @@ class BacktestEngine:
         self.database_url = database_url
         self.pool: Optional[asyncpg.Pool] = None
     
+    def get_table_name(self) -> str:
+        """Get the price ticks table name based on DATA_SOURCE environment variable."""
+        data_source = os.getenv('DATA_SOURCE', 'synthetic')
+        return f'price_ticks_{data_source}'
+    
     async def connect(self):
         """Connect to the database."""
         self.pool = await asyncpg.create_pool(self.database_url)
@@ -125,13 +131,16 @@ class BacktestEngine:
         if not self.pool:
             raise RuntimeError("Database not connected")
         
+        table_name = self.get_table_name()
+        query = f"""
+            SELECT symbol, price, timestamp, open_price, high_price, low_price, close_price, volume, trade_count, vwap
+            FROM {table_name} 
+            WHERE symbol = $1 AND timestamp BETWEEN $2 AND $3
+            ORDER BY timestamp ASC
+        """
+        
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT symbol, price, timestamp, open_price, high_price, low_price, close_price, volume, trade_count, vwap
-                FROM price_ticks 
-                WHERE symbol = $1 AND timestamp BETWEEN $2 AND $3
-                ORDER BY timestamp ASC
-            """, symbol, start_date, end_date)
+            rows = await conn.fetch(query, symbol, start_date, end_date)
         
         # fetch splits if needed
         splits = None

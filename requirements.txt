@@ -26,4 +26,6 @@ ta>=0.10.0  # Technical Analysis library
 yfinance>=0.2.0  # For additional market data
 scipy>=1.10.0
 matplotlib>=3.7.0
-seaborn>=0.12.0 
+seaborn>=0.12.0
+croniter>=6.0.0  # For ML training scheduling
+psycopg2-binary>=2.9.0  # For PostgreSQL database connections 

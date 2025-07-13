@@ -749,6 +749,104 @@ async def get_available_symbols() -> List[str]:
         logger.error(f"Error getting available symbols: {e}")
         return []
 
+@app.get("/api/ml-training-status")
+async def get_ml_training_status():
+    """Get ML training service status and metrics"""
+    try:
+        # Get training service heartbeat
+        heartbeat_data = await redis_client.get("service:ml_training:heartbeat")
+        if heartbeat_data:
+            heartbeat = json.loads(heartbeat_data)
+        else:
+            heartbeat = {
+                'status': 'not_running',
+                'active_jobs': 0,
+                'queue_size': 0,
+                'metrics': {}
+            }
+        
+        # Get training jobs from database
+        async with db_pool.acquire() as conn:
+            # Recent training jobs
+            recent_jobs = await conn.fetch("""
+                SELECT job_id, strategy_type, symbol, status, created_at, 
+                       completed_at, training_duration_seconds, model_accuracy
+                FROM ml_training_jobs 
+                ORDER BY created_at DESC 
+                LIMIT 20
+            """)
+            
+            # Training job stats
+            job_stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_jobs,
+                    COUNT(*) FILTER (WHERE status = 'completed') as completed_jobs,
+                    COUNT(*) FILTER (WHERE status = 'failed') as failed_jobs,
+                    COUNT(*) FILTER (WHERE status = 'running') as running_jobs,
+                    COUNT(*) FILTER (WHERE status = 'queued') as queued_jobs,
+                    AVG(training_duration_seconds) FILTER (WHERE status = 'completed') as avg_duration,
+                    AVG(model_accuracy) FILTER (WHERE status = 'completed') as avg_accuracy
+                FROM ml_training_jobs 
+                WHERE created_at > NOW() - INTERVAL '7 days'
+            """)
+            
+            # Active models
+            active_models = await conn.fetch("""
+                SELECT model_id, strategy_type, symbol, created_at, 
+                       performance_metrics
+                FROM ml_model_registry 
+                WHERE is_active = TRUE 
+                ORDER BY created_at DESC
+            """)
+        
+        return {
+            'service_status': heartbeat,
+            'recent_jobs': [dict(job) for job in recent_jobs],
+            'job_stats': dict(job_stats) if job_stats else {},
+            'active_models': [dict(model) for model in active_models]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting ML training status: {e}")
+        return {
+            'service_status': {'status': 'error', 'error': str(e)},
+            'recent_jobs': [],
+            'job_stats': {},
+                         'active_models': []
+         }
+
+@app.post("/api/ml-training/trigger")
+async def trigger_ml_training(symbol: str = None, strategy_type: str = None):
+    """Manually trigger ML training for specific symbol/strategy"""
+    try:
+        # Create training job
+        job_id = f"manual_{strategy_type or 'all'}_{symbol or 'all'}_{int(datetime.now().timestamp())}"
+        
+        job_data = {
+            'job_id': job_id,
+            'strategy_type': strategy_type or 'ensemble',
+            'symbol': symbol or 'AAPL',
+            'priority': 1,
+            'created_at': datetime.now().isoformat(),
+            'metadata': {'trigger': 'manual', 'source': 'dashboard'}
+        }
+        
+        # Add to Redis queue
+        await redis_client.lpush('ml_training_queue', json.dumps(job_data))
+        
+        return {
+            'success': True,
+            'job_id': job_id,
+            'message': f"Training job queued for {strategy_type or 'all strategies'} on {symbol or 'all symbols'}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error triggering ML training: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
 @app.get("/api/ml-performance")
 async def get_ml_performance():
     """Get ML strategy performance metrics - Read directly from database"""

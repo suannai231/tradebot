@@ -8,6 +8,9 @@ from dataclasses import dataclass
 import asyncio
 import aiohttp
 import json
+import os
+import pickle
+from pathlib import Path
 
 # Machine Learning imports
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
@@ -263,6 +266,10 @@ class EnsembleMLStrategy:
         self.models_trained = False
         self.scaler = StandardScaler()
         
+        # Model persistence
+        self.models_dir = Path("models") / "ensemble"
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        
     def update_data(self, tick: PriceTick):
         """Update internal data structures"""
         symbol = tick.symbol
@@ -384,6 +391,13 @@ class EnsembleMLStrategy:
         """Process tick and generate signals"""
         symbol = tick.symbol
         self.update_data(tick)
+        self.tick_count[symbol] += 1
+        
+        # Check if we should train models (every retrain_frequency ticks)
+        if self.tick_count[symbol] % self.config.retrain_frequency == 0:
+            if len(self.prices[symbol]) >= self.config.min_data_points:
+                logger.info(f"Training ensemble models for {symbol} (tick #{self.tick_count[symbol]})")
+                self.train_models(symbol)
         
         # Check if we have enough data
         if len(self.prices[symbol]) < self.config.min_data_points:
@@ -463,6 +477,78 @@ class EnsembleMLStrategy:
         
         return None
 
+    def save_model(self, symbol: str = "global") -> Optional[str]:
+        """Save the ensemble model to disk"""
+        try:
+            if not self.models_trained:
+                logger.warning("No trained model to save")
+                return None
+            
+            # Create symbol-specific directory
+            symbol_dir = self.models_dir / symbol
+            symbol_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_path = symbol_dir / f"model_{timestamp}.pkl"
+            
+            # Save model data
+            model_data = {
+                'strategy_type': 'ensemble',
+                'symbol': symbol,
+                'timestamp': timestamp,
+                'model_state': {
+                    'ensemble': self.ensemble,
+                    'scaler': self.scaler,
+                    'models_trained': self.models_trained
+                },
+                'config': self.config
+            }
+            
+            with open(model_path, 'wb') as f:
+                pickle.dump(model_data, f)
+            
+            logger.info(f"Ensemble model saved: {model_path}")
+            return str(model_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to save ensemble model: {e}")
+            return None
+
+    def load_model(self, symbol: str = "global", model_path: str = None) -> bool:
+        """Load the ensemble model from disk"""
+        try:
+            if model_path is None:
+                # Find the latest model file
+                symbol_dir = self.models_dir / symbol
+                if not symbol_dir.exists():
+                    logger.warning(f"No model directory found for symbol: {symbol}")
+                    return False
+                
+                model_files = list(symbol_dir.glob("model_*.pkl"))
+                if not model_files:
+                    logger.warning(f"No model files found for symbol: {symbol}")
+                    return False
+                
+                # Get the latest model file
+                model_path = max(model_files, key=lambda p: p.stat().st_mtime)
+            
+            # Load model data
+            with open(model_path, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            # Restore model state
+            self.ensemble = model_data['model_state']['ensemble']
+            self.scaler = model_data['model_state']['scaler']
+            self.models_trained = model_data['model_state']['models_trained']
+            
+            logger.info(f"Ensemble model loaded: {model_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load ensemble model: {e}")
+            return False
+
 
 class LSTMStrategy:
     """LSTM-based time series forecasting strategy"""
@@ -487,6 +573,14 @@ class LSTMStrategy:
         
         if not TENSORFLOW_AVAILABLE:
             logger.warning("TensorFlow not available. Using PyTorch LSTM with GPU support.")
+        
+        # Model persistence
+        self.models_dir = Path("models") / "lstm"
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        
+        # PyTorch models for persistence
+        self.pytorch_models: Dict[str, Any] = {}
+        self.pytorch_optimizers: Dict[str, Any] = {}
     
     def update_data(self, tick: PriceTick):
         """Update internal data structures"""
@@ -654,6 +748,12 @@ class LSTMStrategy:
         symbol = tick.symbol
         self.update_data(tick)
         self.tick_count[symbol] += 1
+        
+        # Check if we should train model (every retrain_frequency ticks)
+        if self.tick_count[symbol] % 1000 == 0:  # Train every 1000 ticks
+            if len(self.prices[symbol]) >= self.config.min_data_points:
+                logger.info(f"Training LSTM model for {symbol} (tick #{self.tick_count[symbol]})")
+                self.train_model(symbol)
         
         # Check if we have enough data
         if len(self.prices[symbol]) < self.config.lookback_period:
@@ -963,6 +1063,83 @@ class LSTMStrategy:
         except Exception as e:
             logger.error(f"Error in improved LSTM prediction for {symbol}: {e}")
             return 0.5, 0.3
+
+    def save_model(self, symbol: str) -> Optional[str]:
+        """Save the LSTM model to disk"""
+        try:
+            if symbol not in self.models:
+                logger.warning(f"No trained model to save for symbol: {symbol}")
+                return None
+            
+            # Create symbol-specific directory
+            symbol_dir = self.models_dir / symbol
+            symbol_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_path = symbol_dir / f"model_{timestamp}.pkl"
+            
+            # Save model data
+            model_data = {
+                'strategy_type': 'lstm',
+                'symbol': symbol,
+                'timestamp': timestamp,
+                'model_state': {
+                    'model': self.models[symbol],
+                    'scaler': self.scalers.get(symbol),
+                    'pytorch_model': self.pytorch_models.get(symbol),
+                    'pytorch_optimizer': self.pytorch_optimizers.get(symbol)
+                },
+                'config': self.config
+            }
+            
+            with open(model_path, 'wb') as f:
+                pickle.dump(model_data, f)
+            
+            logger.info(f"LSTM model saved for {symbol}: {model_path}")
+            return str(model_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to save LSTM model for {symbol}: {e}")
+            return None
+
+    def load_model(self, symbol: str, model_path: str = None) -> bool:
+        """Load the LSTM model from disk"""
+        try:
+            if model_path is None:
+                # Find the latest model file
+                symbol_dir = self.models_dir / symbol
+                if not symbol_dir.exists():
+                    logger.warning(f"No model directory found for symbol: {symbol}")
+                    return False
+                
+                model_files = list(symbol_dir.glob("model_*.pkl"))
+                if not model_files:
+                    logger.warning(f"No model files found for symbol: {symbol}")
+                    return False
+                
+                # Get the latest model file
+                model_path = max(model_files, key=lambda p: p.stat().st_mtime)
+            
+            # Load model data
+            with open(model_path, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            # Restore model state
+            self.models[symbol] = model_data['model_state']['model']
+            if model_data['model_state']['scaler']:
+                self.scalers[symbol] = model_data['model_state']['scaler']
+            if model_data['model_state']['pytorch_model']:
+                self.pytorch_models[symbol] = model_data['model_state']['pytorch_model']
+            if model_data['model_state']['pytorch_optimizer']:
+                self.pytorch_optimizers[symbol] = model_data['model_state']['pytorch_optimizer']
+            
+            logger.info(f"LSTM model loaded for {symbol}: {model_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load LSTM model for {symbol}: {e}")
+            return False
 
 
 class SentimentStrategy:

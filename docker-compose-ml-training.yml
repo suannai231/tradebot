@@ -1,0 +1,35 @@
+# ML Training Services Extension
+# Use: docker compose -f docker-compose.yml -f docker-compose-ml-training.yml up -d
+
+services:
+  ml_trainer:
+    build: .
+    command: python -m tradebot.strategy.ml_training_service
+    env_file: [ .env ]
+    environment:
+      - SERVICE_NAME=ml_trainer
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
+      - TRAINING_SCHEDULE=0 2,14,22 * * *  # 2 AM, 2 PM, 10 PM daily
+      - TRAINING_BATCH_SIZE=5
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    profiles: ["ml-training"]
+
+  ml_monitor:
+    build: .
+    command: python -m tradebot.strategy.ml_monitoring_service
+    env_file: [ .env ]
+    environment:
+      - SERVICE_NAME=ml_monitor
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
+      - MONITOR_INTERVAL=300  # Check every 5 minutes
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles: ["ml-training"] 
