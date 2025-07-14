@@ -159,6 +159,7 @@ services:
     # Mount dashboard directory so HTML/JS edits hot-reload
     volumes:
       - ./tradebot/dashboard:/app/tradebot/dashboard
+      - ./models:/app/models
     command: python -m tradebot.dashboard.main
     env_file: [ .env ]
     environment:
@@ -182,7 +183,7 @@ services:
       - SERVICE_NAME=ml_training
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/tradebot
-      - DATA_SOURCE=${DATA_SOURCE:-synthetic}
+      - SOURCE_DATA=${SOURCE_DATA:-synthetic}
       - TRAINING_CRON_SCHEDULE=${TRAINING_CRON_SCHEDULE:-0 2,14,22 * * *}
       - TRAINING_BATCH_SIZE=${TRAINING_BATCH_SIZE:-1000}
       - MAX_CONCURRENT_TRAINING_JOBS=${MAX_CONCURRENT_TRAINING_JOBS:-3}

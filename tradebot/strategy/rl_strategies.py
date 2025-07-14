@@ -5,6 +5,8 @@ from collections import deque, defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
+from pathlib import Path
+import pickle
 # Try to import RL dependencies
 try:
     import gymnasium as gym
@@ -324,6 +326,10 @@ class RLStrategy:
         # Training state
         self.models_trained = False
         self.training_episodes = 0
+        
+        # Model persistence
+        self.models_dir = Path("models") / "rl"
+        self.models_dir.mkdir(parents=True, exist_ok=True)
     
     def update_data(self, tick: PriceTick):
         """Update internal data structures"""
@@ -609,6 +615,75 @@ class RLStrategy:
         except Exception as e:
             logger.error(f"Error in improved RL strategy for {symbol}: {e}")
             return None
+    
+    def save_model(self, symbol: str) -> Optional[str]:
+        """Save the RL model to disk"""
+        try:
+            # Create symbol-specific directory
+            symbol_dir = self.models_dir / symbol
+            symbol_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_path = symbol_dir / f"model_{timestamp}.pkl"
+            
+            # Save model data
+            model_data = {
+                'strategy_type': 'rl',
+                'symbol': symbol,
+                'timestamp': timestamp,
+                'model_state': {
+                    'environments': self.environments.get(symbol),
+                    'models_trained': self.models_trained,
+                    'training_episodes': self.training_episodes
+                },
+                'config': self.config
+            }
+            
+            with open(model_path, 'wb') as f:
+                pickle.dump(model_data, f)
+            
+            logger.info(f"RL model saved for {symbol}: {model_path}")
+            return str(model_path)
+            
+        except Exception as e:
+            logger.error(f"Failed to save RL model for {symbol}: {e}")
+            return None
+
+    def load_model(self, symbol: str, model_path: str = None) -> bool:
+        """Load the RL model from disk"""
+        try:
+            if model_path is None:
+                # Find the latest model file
+                symbol_dir = self.models_dir / symbol
+                if not symbol_dir.exists():
+                    logger.warning(f"No model directory found for symbol: {symbol}")
+                    return False
+                
+                model_files = list(symbol_dir.glob("model_*.pkl"))
+                if not model_files:
+                    logger.warning(f"No model files found for symbol: {symbol}")
+                    return False
+                
+                # Get the latest model file
+                model_path = max(model_files, key=lambda p: p.stat().st_mtime)
+            
+            # Load model data
+            with open(model_path, 'rb') as f:
+                model_data = pickle.load(f)
+            
+            # Restore model state
+            if model_data['model_state']['environments']:
+                self.environments[symbol] = model_data['model_state']['environments']
+            self.models_trained = model_data['model_state']['models_trained']
+            self.training_episodes = model_data['model_state']['training_episodes']
+            
+            logger.info(f"RL model loaded for {symbol}: {model_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load RL model for {symbol}: {e}")
+            return False
 
 
 # Factory function to create RL strategies

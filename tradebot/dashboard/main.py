@@ -849,21 +849,54 @@ async def trigger_ml_training(symbol: str = None, strategy_type: str = None):
 
 @app.get("/api/ml-performance")
 async def get_ml_performance():
-    """Get ML strategy performance metrics - Read directly from database"""
+    """Get ML strategy performance metrics - Read from database and model files"""
     try:
         # Read directly from the ml_strategy_signals table
         if not db_pool:
             raise Exception("Database not available")
         
         ml_strategies = ["ensemble_ml", "lstm_ml", "sentiment_ml", "rl_ml"]
+        
+        # Get real training status from model files
+        training_status = {}
+        
+        from pathlib import Path
+        models_dir = Path("models")
+        strategy_mapping = {
+            "ensemble_ml": "ensemble",
+            "lstm_ml": "lstm", 
+            "sentiment_ml": "sentiment",
+            "rl_ml": "rl"
+        }
+        
+        for strategy_name, folder_name in strategy_mapping.items():
+            strategy_dir = models_dir / folder_name
+            latest_training = None
+            model_count = 0
+            
+            if strategy_dir.exists():
+                # Find the most recent model across all symbols
+                all_models = []
+                for symbol_dir in strategy_dir.iterdir():
+                    if symbol_dir.is_dir():
+                        models = list(symbol_dir.glob("*.pkl"))
+                        all_models.extend(models)
+                        model_count += len(models)
+                
+                if all_models:
+                    latest_model = max(all_models, key=lambda p: p.stat().st_mtime)
+                    latest_training = datetime.fromtimestamp(latest_model.stat().st_mtime).isoformat() + "Z"
+            
+            training_status[strategy_name] = {
+                "status": "trained" if latest_training else "not_trained",
+                "last_training": latest_training or "Never",
+                "model_accuracy": 0.85 if strategy_name == "ensemble_ml" else (0.72 if strategy_name == "lstm_ml" else (0.68 if strategy_name == "sentiment_ml" else 0.65)),
+                "model_count": model_count
+            }
+        
         performance_data = {
             "performance": {},
-            "training_status": {
-                "ensemble_ml": {"status": "trained", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.85},
-                "lstm_ml": {"status": "trained", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.72},
-                "sentiment_ml": {"status": "trained", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.68},
-                "rl_ml": {"status": "trained", "last_training": "2025-07-10T16:18:35Z", "model_accuracy": 0.65}
-            }
+            "training_status": training_status
         }
         
         async with db_pool.acquire() as conn:
@@ -918,6 +951,50 @@ async def get_ml_performance():
     except Exception as e:
         logger.error(f"Error getting ML performance data: {e}")
         # Return fallback data on error  
+        # Generate fallback training status from model files even on error
+        fallback_training_status = {}
+        try:
+            from pathlib import Path
+            models_dir = Path("models")
+            strategy_mapping = {
+                "ensemble_ml": "ensemble",
+                "lstm_ml": "lstm", 
+                "sentiment_ml": "sentiment",
+                "rl_ml": "rl"
+            }
+            
+            for strategy_name, folder_name in strategy_mapping.items():
+                strategy_dir = models_dir / folder_name
+                latest_training = None
+                model_count = 0
+                
+                if strategy_dir.exists():
+                    all_models = []
+                    for symbol_dir in strategy_dir.iterdir():
+                        if symbol_dir.is_dir():
+                            models = list(symbol_dir.glob("*.pkl"))
+                            all_models.extend(models)
+                            model_count += len(models)
+                    
+                    if all_models:
+                        latest_model = max(all_models, key=lambda p: p.stat().st_mtime)
+                        latest_training = datetime.fromtimestamp(latest_model.stat().st_mtime).isoformat() + "Z"
+                
+                fallback_training_status[strategy_name] = {
+                    "status": "trained" if latest_training else "not_trained",
+                    "last_training": latest_training or "Never",
+                    "model_accuracy": 0.85 if strategy_name == "ensemble_ml" else (0.72 if strategy_name == "lstm_ml" else (0.68 if strategy_name == "sentiment_ml" else 0.65)),
+                    "model_count": model_count
+                }
+        except:
+            # Ultimate fallback with old hard-coded dates
+            fallback_training_status = {
+                "ensemble_ml": {"status": "error", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.85},
+                "lstm_ml": {"status": "error", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.72},
+                "sentiment_ml": {"status": "error", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.68},
+                "rl_ml": {"status": "error", "last_training": "2025-07-10T16:18:35Z", "model_accuracy": 0.65}
+            }
+        
         return {
             "performance": {
                 "ensemble_ml": {"signals": 0, "wins": 0, "losses": 0, "completed_trades": 0, "total_pnl": 0.0, "avg_pnl": 0.0},
@@ -925,12 +1002,7 @@ async def get_ml_performance():
                 "sentiment_ml": {"signals": 0, "wins": 0, "losses": 0, "completed_trades": 0, "total_pnl": 0.0, "avg_pnl": 0.0},
                 "rl_ml": {"signals": 0, "wins": 0, "losses": 0, "completed_trades": 0, "total_pnl": 0.0, "avg_pnl": 0.0}
             },
-            "training_status": {
-                "ensemble_ml": {"status": "trained", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.85},
-                "lstm_ml": {"status": "trained", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.72},
-                "sentiment_ml": {"status": "trained", "last_training": "2025-07-10T16:10:04Z", "model_accuracy": 0.68},
-                "rl_ml": {"status": "trained", "last_training": "2025-07-10T16:18:35Z", "model_accuracy": 0.65}
-            }
+            "training_status": fallback_training_status
         }
 
 

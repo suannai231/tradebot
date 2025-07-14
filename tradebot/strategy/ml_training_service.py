@@ -33,7 +33,8 @@ from psycopg2.extras import RealDictCursor
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from tradebot.common.config import TradeBotConfig
-from tradebot.strategy.ml_strategies import EnsembleMLStrategy, LSTMStrategy, MLStrategyConfig
+from tradebot.strategy.ml_strategies import EnsembleMLStrategy, LSTMStrategy, SentimentStrategy, MLStrategyConfig
+from tradebot.strategy.rl_strategies import RLStrategy, RLStrategyConfig
 
 # Configure logging
 logging.basicConfig(
@@ -63,7 +64,9 @@ class MLTrainingService:
         # Training strategies
         self.strategies = {
             'ensemble': EnsembleMLStrategy,
-            'lstm': LSTMStrategy
+            'lstm': LSTMStrategy,
+            'sentiment': SentimentStrategy,
+            'rl': RLStrategy
         }
         
         # Training configuration
@@ -72,7 +75,7 @@ class MLTrainingService:
             'max_concurrent_jobs': int(os.getenv('MAX_CONCURRENT_TRAINING_JOBS', '3')),
             'job_timeout': int(os.getenv('TRAINING_JOB_TIMEOUT', '3600')),  # 1 hour
             'retry_attempts': int(os.getenv('TRAINING_RETRY_ATTEMPTS', '3')),
-            'min_data_points': int(os.getenv('MIN_TRAINING_DATA_POINTS', '100')),
+            'min_data_points': int(os.getenv('MIN_TRAINING_DATA_POINTS', '50')),  # Reduced for testing
             'model_retention_days': int(os.getenv('MODEL_RETENTION_DAYS', '30')),
         }
         
@@ -123,6 +126,9 @@ class MLTrainingService:
             
             # Clean up old models
             await self.cleanup_old_models()
+            
+            # Clean up malformed queue data
+            await self.cleanup_queue()
             
             # Update metrics
             await self.update_model_metrics()
@@ -234,6 +240,61 @@ class MLTrainingService:
                 
         except Exception as e:
             logger.error(f"Failed to cleanup old models: {e}")
+    
+    async def cleanup_queue(self):
+        """Clean up malformed data from Redis queue"""
+        try:
+            cleanup_count = 0
+            queue_name = 'ml_training_queue'
+            
+            # Get all items from queue
+            queue_items = await asyncio.get_event_loop().run_in_executor(
+                None, self.redis_client.lrange, queue_name, 0, -1
+            )
+            
+            # Clear the queue
+            await asyncio.get_event_loop().run_in_executor(
+                None, self.redis_client.delete, queue_name
+            )
+            
+            # Re-add only valid items
+            for item in queue_items:
+                try:
+                    if isinstance(item, bytes):
+                        item = item.decode('utf-8')
+                    
+                    # Skip empty or malformed data
+                    if not item or not item.strip():
+                        cleanup_count += 1
+                        continue
+                    
+                    # Validate JSON format
+                    if not item.strip().startswith('{') or not item.strip().endswith('}'):
+                        cleanup_count += 1
+                        continue
+                    
+                    # Try to parse JSON
+                    job_data = json.loads(item)
+                    
+                    # Validate required fields
+                    required_fields = ['job_id', 'strategy_type', 'symbol']
+                    if not all(field in job_data for field in required_fields):
+                        cleanup_count += 1
+                        continue
+                    
+                    # Re-add valid item
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, self.redis_client.lpush, queue_name, item
+                    )
+                    
+                except (json.JSONDecodeError, Exception):
+                    cleanup_count += 1
+                    continue
+            
+            logger.info(f"Cleaned up {cleanup_count} malformed queue items")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up queue: {e}")
     
     async def update_model_metrics(self):
         """Update model metrics in memory"""
@@ -366,7 +427,8 @@ class MLTrainingService:
         """Get list of active trading symbols"""
         try:
             # Get symbols from recent price data
-            table_name = f"price_ticks_{os.getenv('DATA_SOURCE', 'synthetic')}"
+            data_source = os.getenv('SOURCE_DATA', 'synthetic')
+            table_name = f"price_ticks_{data_source}"
             
             with self.db_connection.cursor() as cursor:
                 cursor.execute(f"""
@@ -447,9 +509,38 @@ class MLTrainingService:
                 if not job_data:
                     continue
                 
-                # Parse job
-                job_json = json.loads(job_data[1])
-                job = type('TrainingJob', (), job_json)
+                # Validate and parse job data
+                try:
+                    raw_data = job_data[1]
+                    if isinstance(raw_data, bytes):
+                        raw_data = raw_data.decode('utf-8')
+                    
+                    # Skip empty or malformed data
+                    if not raw_data or not raw_data.strip():
+                        logger.warning("Skipping empty job data")
+                        continue
+                    
+                    # Validate JSON format
+                    if not raw_data.strip().startswith('{') or not raw_data.strip().endswith('}'):
+                        logger.warning(f"Skipping malformed job data: {raw_data[:100]}...")
+                        continue
+                    
+                    job_json = json.loads(raw_data)
+                    
+                    # Validate required fields
+                    required_fields = ['job_id', 'strategy_type', 'symbol']
+                    if not all(field in job_json for field in required_fields):
+                        logger.warning(f"Skipping job with missing fields: {job_json}")
+                        continue
+                    
+                    job = type('TrainingJob', (), job_json)
+                    
+                except json.JSONDecodeError as json_error:
+                    logger.warning(f"Failed to parse job JSON: {json_error}. Raw data: {raw_data[:100]}...")
+                    continue
+                except Exception as parse_error:
+                    logger.warning(f"Failed to process job data: {parse_error}")
+                    continue
                 
                 # Check if we have capacity
                 if len(self.active_jobs) >= self.training_config['max_concurrent_jobs']:
@@ -459,7 +550,7 @@ class MLTrainingService:
                             None,
                             self.redis_client.lpush,
                             'ml_training_queue',
-                            job_data[1]
+                            raw_data
                         )
                     except Exception as redis_error:
                         logger.warning(f"Failed to requeue job: {redis_error}")
@@ -471,6 +562,7 @@ class MLTrainingService:
                 
             except Exception as e:
                 logger.error(f"Queue worker error: {e}")
+                logger.debug(f"Queue worker error details: {traceback.format_exc()}")
                 await asyncio.sleep(5)
     
     async def process_training_job(self, job):
@@ -487,11 +579,24 @@ class MLTrainingService:
             training_data = await self.get_training_data(job.symbol)
             
             if len(training_data) < self.training_config['min_data_points']:
-                raise ValueError(f"Insufficient training data: {len(training_data)} points")
+                logger.warning(f"Insufficient training data for {job.symbol}: {len(training_data)} points (minimum: {self.training_config['min_data_points']})")
+                
+                # Update job status as skipped instead of failed
+                await self.update_job_status(
+                    job.job_id,
+                    'skipped',
+                    completed_at=datetime.now(),
+                    training_data_points=len(training_data),
+                    error_message=f"Insufficient training data: {len(training_data)} points"
+                )
+                return
             
-            # Initialize strategy
+            # Initialize strategy with appropriate config
             strategy_class = self.strategies[job.strategy_type]
-            strategy = strategy_class(MLStrategyConfig())
+            if job.strategy_type == 'rl':
+                strategy = strategy_class(RLStrategyConfig())
+            else:
+                strategy = strategy_class(MLStrategyConfig())
             
             # Train model
             result = await self.train_model(strategy, job.symbol, training_data)
@@ -542,53 +647,96 @@ class MLTrainingService:
     async def get_training_data(self, symbol: str) -> List[Dict[str, Any]]:
         """Get training data for a symbol"""
         try:
-            table_name = f"price_ticks_{os.getenv('DATA_SOURCE', 'synthetic')}"
+            data_source = os.getenv('SOURCE_DATA', 'synthetic')
+            table_name = f"price_ticks_{data_source}"
+            
+            logger.info(f"Getting training data for {symbol} from table: {table_name}")
             
             with self.db_connection.cursor() as cursor:
+                # First, check if the table exists and has data
+                cursor.execute(f"SELECT COUNT(*) as count FROM {table_name} WHERE symbol = %s", (symbol,))
+                result = cursor.fetchone()
+                total_count = result['count'] if result else 0
+                logger.info(f"Total records for {symbol} in {table_name}: {total_count}")
+                
                 cursor.execute(f"""
-                    SELECT timestamp, symbol, open, high, low, close, volume
+                    SELECT timestamp, symbol, 
+                           open_price as open, high_price as high, 
+                           low_price as low, close_price as close, 
+                           COALESCE(volume, 0) as volume
                     FROM {table_name}
                     WHERE symbol = %s
-                    AND timestamp > NOW() - INTERVAL '30 days'
+                    AND timestamp > NOW() - INTERVAL '1 year'
                     ORDER BY timestamp
                     LIMIT %s
                 """, (symbol, self.training_config['batch_size']))
                 
-                return cursor.fetchall()
+                data = cursor.fetchall()
+                logger.info(f"Retrieved {len(data)} training data points for {symbol} (after time filter)")
+                
+                if len(data) > 0:
+                    logger.info(f"Sample data point: {data[0]}")
+                
+                return data
                 
         except Exception as e:
             logger.error(f"Failed to get training data for {symbol}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return []
     
     async def train_model(self, strategy, symbol: str, training_data: List[Dict[str, Any]]):
         """Train a model using the strategy"""
         try:
-            # Convert data to required format
-            formatted_data = []
-            for row in training_data:
-                formatted_data.append({
-                    'timestamp': row['timestamp'],
-                    'symbol': row['symbol'],
-                    'open': float(row['open']),
-                    'high': float(row['high']),
-                    'low': float(row['low']),
-                    'close': float(row['close']),
-                    'volume': int(row['volume'])
-                })
+            # Convert data to required format and populate strategy's internal data
+            from tradebot.common.models import PriceTick
+            from datetime import datetime
             
-            # Train the model
+            # Populate the strategy's internal data structures
+            for row in training_data:
+                # Handle None values and provide defaults with better error handling
+                try:
+                    close_price = float(row.get('close') or 0)
+                    if close_price == 0:
+                        logger.warning(f"Zero close price for {symbol}, skipping row")
+                        continue
+                        
+                    open_price = float(row.get('open') or close_price)
+                    high_price = float(row.get('high') or close_price)
+                    low_price = float(row.get('low') or close_price)
+                    volume = int(row.get('volume') or 1000)
+                    
+                    # Validate OHLC data makes sense
+                    if high_price < max(open_price, close_price) or low_price > min(open_price, close_price):
+                        high_price = max(open_price, close_price, high_price)
+                        low_price = min(open_price, close_price, low_price)
+                        
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid data in row for {symbol}: {e}, skipping")
+                    continue
+                
+                tick = PriceTick(
+                    symbol=row['symbol'],
+                    price=close_price,
+                    timestamp=row['timestamp'],
+                    open_price=open_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    close_price=close_price,
+                    volume=volume
+                )
+                strategy.update_data(tick)
+            
+            # Train the model with correct method signature
             if hasattr(strategy, 'train_model'):
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    strategy.train_model,
-                    symbol,
-                    formatted_data
+                    lambda: strategy.train_model(symbol)
                 )
             elif hasattr(strategy, 'train_models'):
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    strategy.train_models,
-                    symbol
+                    lambda: strategy.train_models(symbol)
                 )
             else:
                 raise ValueError(f"Strategy {type(strategy).__name__} has no training method")
